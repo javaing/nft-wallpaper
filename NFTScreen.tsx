@@ -22,6 +22,7 @@ import {
   getWorkerDebugStatus,
   type WorkerDebugStatus,
 } from './WallpaperManager';
+import { useTranslation } from 'react-i18next';
 
 const ALCHEMY_API_KEY = process.env.EXPO_PUBLIC_ALCHEMY_API_KEY ?? 'YOUR_ALCHEMY_API_KEY';
 const PAGE_SIZE = 20;
@@ -324,6 +325,7 @@ type Props = {
 };
 
 export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Props) {
+  const { t } = useTranslation();
   const [selectedAddress, setSelectedAddress] = useState<string>(wallets[0] ?? '');
 
   // wallets 變動時，若目前選取的地址已不在清單中，切回第一個
@@ -511,7 +513,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
 
   const handleSetWallpaper = useCallback(async () => {
     if (!selectedNFT) {
-      Alert.alert('請先選擇 NFT', '點擊一張 NFT 圖片後再按「設為桌布」');
+      Alert.alert(t('select_nft_first'), t('select_nft_first_msg'));
       return;
     }
     setSettingWallpaper(true);
@@ -524,9 +526,9 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
         setDate: new Date().toDateString(),
         address,
       });
-      Alert.alert('完成', '請在系統選單中選擇「設為桌布」');
+      Alert.alert(t('wallpaper_done'), '');
     } catch (e: any) {
-      Alert.alert('設定失敗', e?.message ?? '請重試');
+      Alert.alert(t('wallpaper_failed'), e?.message ?? t('retry'));
     } finally {
       setSettingWallpaper(false);
     }
@@ -564,7 +566,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>我的 NFT</Text>
+        <Text style={styles.headerTitle}>{t('my_nfts')}</Text>
         <View style={{ flex: 1 }} />
         <TouchableOpacity onPress={refreshList} style={styles.refreshBtn} disabled={loading}>
           <Text style={[styles.refreshText, loading && { opacity: 0.4 }]}>↻</Text>
@@ -611,12 +613,12 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
       <View style={styles.wallpaperBar}>
         <View style={{ flex: 1 }}>
           {wallpaperSetToday ? (
-            <Text style={styles.wallpaperHint}>✅ 今日桌布：{currentWallpaper!.nft.name}</Text>
+            <Text style={styles.wallpaperHint}>{t('wallpaper_today', { name: currentWallpaper!.nft.name })}</Text>
           ) : currentWallpaper ? (
-            <Text style={styles.wallpaperHint}>⏰ 上次設定：{currentWallpaper.nft.name}</Text>
+            <Text style={styles.wallpaperHint}>{t('wallpaper_last', { name: currentWallpaper.nft.name })}</Text>
           ) : (
             <Text style={styles.wallpaperHint}>
-              {selectedNFT ? `已選：${selectedNFT.name}` : '點選 NFT 後設為桌布'}
+              {selectedNFT ? t('wallpaper_selected', { name: selectedNFT.name }) : t('wallpaper_select_hint')}
             </Text>
           )}
         </View>
@@ -650,7 +652,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
           {settingWallpaper ? (
             <ActivityIndicator size="small" color="#fff" />
           ) : (
-            <Text style={styles.wallpaperBtnText}>🖼 設為桌布</Text>
+            <Text style={styles.wallpaperBtnText}>{t('set_wallpaper')}</Text>
           )}
         </TouchableOpacity>
       </View>
@@ -679,20 +681,20 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
       {loading ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#7c3aed" />
-          <Text style={styles.loadingText}>載入 NFT 中...</Text>
+          <Text style={styles.loadingText}>{t('loading_nfts')}</Text>
         </View>
       ) : error ? (
         <View style={styles.center}>
-          <Text style={styles.errorText}>載入失敗：{error}</Text>
+          <Text style={styles.errorText}>{t('load_failed', { error })}</Text>
           <TouchableOpacity style={styles.retryBtn} onPress={refreshList}>
-            <Text style={styles.retryText}>重試</Text>
+            <Text style={styles.retryText}>{t('retry')}</Text>
           </TouchableOpacity>
         </View>
       ) : nfts.length === 0 ? (
         <View style={styles.center}>
           <Text style={styles.emptyIcon}>🔍</Text>
-          <Text style={styles.emptyText}>此錢包沒有 NFT</Text>
-          <Text style={styles.emptySubtext}>只顯示以太坊主網的 NFT</Text>
+          <Text style={styles.emptyText}>{t('empty_nfts')}</Text>
+          <Text style={styles.emptySubtext}>{t('empty_nfts_sub')}</Text>
         </View>
       ) : (
         <>
@@ -722,9 +724,9 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
             showsVerticalScrollIndicator={false}
             ListHeaderComponent={
               <Text style={styles.count}>
-                第 {currentPage} 頁
-                {totalCount ? `，共 ${totalCount} 個` : ''}
-                {' · '}點擊選取後按「設為桌布」
+                {t('page_info', { page: currentPage })}
+                {totalCount ? t('total_count', { count: totalCount }) : ''}
+                {t('page_select_hint')}
               </Text>
             }
           />
@@ -736,7 +738,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
               onPress={goPrevPage}
               disabled={currentPage <= 1}
             >
-              <Text style={styles.pageBtnText}>← 上一頁</Text>
+              <Text style={styles.pageBtnText}>{t('prev_page')}</Text>
             </TouchableOpacity>
             <Text style={styles.pageNum}>
               {currentPage} / {(() => {
@@ -750,7 +752,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
               onPress={goNextPage}
               disabled={!nextPageKey}
             >
-              <Text style={styles.pageBtnText}>下一頁 →</Text>
+              <Text style={styles.pageBtnText}>{t('next_page')}</Text>
             </TouchableOpacity>
           </View>
         </>

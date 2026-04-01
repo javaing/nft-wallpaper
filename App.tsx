@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { WalletConnectModal, useWalletConnectModal } from '@walletconnect/modal-react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useTranslation } from 'react-i18next';
 import NFTScreen from './NFTScreen';
 
 const STORAGE_KEY_WALLETS = 'saved_wallets_v2';
@@ -38,6 +39,7 @@ function QRScanner({
   onScan: (address: string) => void;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
 
@@ -49,27 +51,27 @@ function QRScanner({
         setScanned(true);
         onScan(address);
       } else {
-        Alert.alert('無法識別', '此 QR Code 不是支援的錢包地址格式\n(支援 Ethereum / Tezos)', [
-          { text: '重試', onPress: () => setScanned(false) },
-          { text: '取消', onPress: onClose },
+        Alert.alert(t('unrecognized_qr'), t('unrecognized_qr_msg'), [
+          { text: t('retry'), onPress: () => setScanned(false) },
+          { text: t('cancel'), onPress: onClose },
         ]);
         setScanned(true);
       }
     },
-    [scanned, onScan, onClose]
+    [scanned, onScan, onClose, t]
   );
 
-  if (!permission) return <View style={scanner.center}><Text style={scanner.text}>載入相機權限中...</Text></View>;
+  if (!permission) return <View style={scanner.center}><Text style={scanner.text}>{t('loading_camera')}</Text></View>;
 
   if (!permission.granted) {
     return (
       <View style={scanner.center}>
-        <Text style={scanner.text}>需要相機權限才能掃描 QR Code</Text>
+        <Text style={scanner.text}>{t('camera_permission_required')}</Text>
         <TouchableOpacity style={scanner.btn} onPress={requestPermission}>
-          <Text style={scanner.btnText}>授予相機權限</Text>
+          <Text style={scanner.btnText}>{t('grant_camera')}</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[scanner.btn, scanner.cancelBtn]} onPress={onClose}>
-          <Text style={scanner.btnText}>取消</Text>
+          <Text style={scanner.btnText}>{t('cancel')}</Text>
         </TouchableOpacity>
       </View>
     );
@@ -96,10 +98,10 @@ function QRScanner({
           <View style={scanner.sideMask} />
         </View>
         <View style={scanner.bottomMask}>
-          <Text style={scanner.hint}>對準錢包的 QR Code 進行掃描</Text>
-          <Text style={scanner.hint2}>支援 Ethereum 與 Tezos 地址</Text>
+          <Text style={scanner.hint}>{t('scan_hint')}</Text>
+          <Text style={scanner.hint2}>{t('scan_hint2')}</Text>
           <TouchableOpacity style={[scanner.btn, { marginTop: 16 }]} onPress={onClose}>
-            <Text style={scanner.btnText}>取消</Text>
+            <Text style={scanner.btnText}>{t('cancel')}</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -111,6 +113,7 @@ const METAMASK_DEEP_LINK = 'metamask://';
 const METAMASK_PLAY_STORE = 'https://play.google.com/store/apps/details?id=io.metamask';
 
 function MainScreen() {
+  const { t } = useTranslation();
   const { open, isConnected, address: wcAddress, provider } = useWalletConnectModal();
   const [isLoading, setIsLoading] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
@@ -156,7 +159,7 @@ function MainScreen() {
     setWallets(prev => {
       if (prev.includes(address)) return prev;
       if (prev.length >= 10) {
-        Alert.alert('已達上限', '最多只能儲存 10 個錢包地址');
+        Alert.alert(t('remove_wallet'), '10');
         return prev;
       }
       const next = [...prev, address];
@@ -183,9 +186,9 @@ function MainScreen() {
 
   const handleConnect = useCallback(async () => {
     if (hasMetaMask === false) {
-      Alert.alert('尚未安裝 MetaMask', '請先從 Google Play 安裝 MetaMask 應用程式。', [
-        { text: '前往安裝', onPress: () => Linking.openURL(METAMASK_PLAY_STORE) },
-        { text: '取消', style: 'cancel' },
+      Alert.alert(t('metamask_not_installed_title'), t('metamask_not_installed_msg'), [
+        { text: t('go_install'), onPress: () => Linking.openURL(METAMASK_PLAY_STORE) },
+        { text: t('cancel'), style: 'cancel' },
       ]);
       return;
     }
@@ -193,7 +196,7 @@ function MainScreen() {
       setIsLoading(true);
       await open();
     } catch {
-      Alert.alert('連線失敗', '無法連線至 MetaMask，請重試。');
+      Alert.alert(t('connect_failed'), t('connect_failed_msg'));
     } finally {
       setIsLoading(false);
     }
@@ -224,10 +227,8 @@ function MainScreen() {
         <StatusBar style="light" />
         <View style={styles.card}>
           <Text style={styles.logo}>🖼️</Text>
-          <Text style={styles.title}>NFT Wallpaper</Text>
-          <Text style={styles.subtitle}>
-            連結你的以太坊或 Tezos 錢包{'\n'}將 NFT 設為每日桌布
-          </Text>
+          <Text style={styles.title}>{t('app_title')}</Text>
+          <Text style={styles.subtitle}>{t('app_subtitle')}</Text>
 
           <TouchableOpacity
             style={[
@@ -239,27 +240,27 @@ function MainScreen() {
             disabled={isLoading || hasMetaMask === null}
           >
             <Text style={styles.connectText}>
-              {isLoading ? '連線中...'
-                : hasMetaMask === null ? '偵測 MetaMask...'
-                : hasMetaMask ? '🦊 使用 MetaMask 登入'
-                : '🦊 安裝 MetaMask'}
+              {isLoading ? t('metamask_connecting')
+                : hasMetaMask === null ? t('metamask_detecting')
+                : hasMetaMask ? t('metamask_login')
+                : t('metamask_install')}
             </Text>
             {hasMetaMask === false && (
-              <Text style={styles.connectSubtext}>點擊前往 Google Play 下載</Text>
+              <Text style={styles.connectSubtext}>{t('metamask_install_hint')}</Text>
             )}
           </TouchableOpacity>
 
           <View style={styles.divider}>
             <View style={styles.dividerLine} />
-            <Text style={styles.dividerText}>或</Text>
+            <Text style={styles.dividerText}>{t('or')}</Text>
             <View style={styles.dividerLine} />
           </View>
 
           <TouchableOpacity style={styles.qrButton} onPress={() => setShowScanner(true)}>
-            <Text style={styles.qrText}>📷 掃描錢包 QR Code</Text>
+            <Text style={styles.qrText}>{t('scan_qr')}</Text>
           </TouchableOpacity>
 
-          <Text style={styles.disclaimer}>支援 Ethereum (ETH) 與 Tezos (XTZ) 錢包</Text>
+          <Text style={styles.disclaimer}>{t('metamask_download_hint')}</Text>
         </View>
       </View>
 

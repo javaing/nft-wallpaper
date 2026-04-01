@@ -37,9 +37,13 @@ yarn-error.*
 # Claude memory
 .claude/
 
+# logs & scripts
+*.log
+*.ps1
+
 # typescript
 *.tsbuildinfo
 
 # generated native folders
 /ios
-/android
+# android 有自訂原生模組，不排除（由 android/.gitignore 過濾 build 產物）

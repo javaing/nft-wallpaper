@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>NFT Wallpaper Icon</title>
+<style>body{margin:0;background:#111;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;gap:16px;}
+button{padding:12px 24px;background:#7c3aed;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer;}
+p{color:#aaa;font-family:sans-serif;}</style>
+</head>
+<body>
+<svg id="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1a0533"/>
+      <stop offset="100%" stop-color="#0d1f6e"/>
+    </linearGradient>
+    <linearGradient id="frameGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="50%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#06b6d4"/>
+    </linearGradient>
+    <linearGradient id="artGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="60%" r="50%">
+      <stop offset="0%" stop-color="#a855f7" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#a855f7" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="16" flood-color="#a855f7" flood-opacity="0.5"/>
+    </filter>
+    <clipPath id="artClip">
+      <rect x="116" y="106" width="280" height="230" rx="8"/>
+    </clipPath>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+  <ellipse cx="256" cy="400" rx="200" ry="80" fill="url(#glow)"/>
+  <rect x="96" y="86" width="320" height="270" rx="20" fill="url(#frameGrad)" filter="url(#shadow)"/>
+  <rect x="104" y="94" width="304" height="254" rx="15" fill="#1e1040"/>
+  <rect x="116" y="106" width="280" height="230" rx="8" fill="url(#artGrad)"/>
+  <g clip-path="url(#artClip)">
+    <rect x="116" y="106" width="280" height="230" fill="#1d1058"/>
+    <circle cx="220" cy="200" r="90" fill="#7c3aed" opacity="0.7"/>
+    <circle cx="310" cy="240" r="70" fill="#2563eb" opacity="0.7"/>
+    <circle cx="200" cy="165" r="35" fill="#c084fc" opacity="0.8"/>
+    <circle cx="320" cy="170" r="25" fill="#38bdf8" opacity="0.9"/>
+    <polygon points="256,130 290,175 256,220 222,175" fill="#f0abfc" opacity="0.6"/>
+    <circle cx="160" cy="290" r="12" fill="#a78bfa"/>
+    <circle cx="360" cy="130" r="8" fill="#67e8f9"/>
+    <circle cx="370" cy="300" r="15" fill="#818cf8"/>
+    <line x1="116" y1="268" x2="396" y2="268" stroke="#a855f7" stroke-width="1.5" opacity="0.4"/>
+  </g>
+  <rect x="176" y="345" width="160" height="38" rx="10" fill="#2d1b69"/>
+  <rect x="178" y="347" width="156" height="34" rx="9" fill="none" stroke="url(#frameGrad)" stroke-width="1.5"/>
+  <text x="256" y="371" text-anchor="middle" font-family="'Arial Black',sans-serif" font-size="18" font-weight="900" letter-spacing="4" fill="url(#frameGrad)">NFT</text>
+  <text x="256" y="430" text-anchor="middle" font-family="Arial,sans-serif" font-size="22" font-weight="700" letter-spacing="1" fill="#e2d9f3">Wallpaper</text>
+  <circle cx="195" cy="456" r="4" fill="#a855f7" opacity="0.8"/>
+  <circle cx="212" cy="456" r="4" fill="#6366f1" opacity="0.8"/>
+  <circle cx="229" cy="456" r="4" fill="#06b6d4" opacity="0.8"/>
+  <circle cx="283" cy="456" r="4" fill="#06b6d4" opacity="0.8"/>
+  <circle cx="300" cy="456" r="4" fill="#6366f1" opacity="0.8"/>
+  <circle cx="317" cy="456" r="4" fill="#a855f7" opacity="0.8"/>
+</svg>
+<p>預覽 (256px) ↑ &nbsp;|&nbsp; 點下方按鈕下載 512×512 PNG</p>
+<button onclick="downloadPNG()">下載 icon.png (512×512)</button>
+<script>
+function downloadPNG() {
+  const svg = document.getElementById('icon');
+  const serializer = new XMLSerializer();
+  const svgStr = serializer.serializeToString(svg);
+  const img = new Image();
+  const blob = new Blob([svgStr], {type:'image/svg+xml;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  img.onload = function() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512; canvas.height = 512;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, 512, 512);
+    URL.revokeObjectURL(url);
+    const link = document.createElement('a');
+    link.download = 'nft-wallpaper-icon-512.png';
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  };
+  img.src = url;
+}
+</script>
+</body>
+</html>

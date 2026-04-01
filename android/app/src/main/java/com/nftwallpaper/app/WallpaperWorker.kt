@@ -7,6 +7,9 @@ import androidx.work.*
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 class WallpaperWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
@@ -17,6 +20,7 @@ class WallpaperWorker(context: Context, params: WorkerParameters) : Worker(conte
         const val KEY_ADDRESS = "wallet_address"
         const val KEY_API_KEY = "alchemy_api_key"
         const val KEY_INDEX  = "auto_index"
+        const val KEY_LAST_DATE = "last_wallpaper_date"
         const val KEY_LAST_RUN_AT = "debug_last_run_at"
         const val KEY_LAST_RESULT = "debug_last_result"
         const val KEY_LAST_MESSAGE = "debug_last_message"
@@ -86,6 +90,14 @@ class WallpaperWorker(context: Context, params: WorkerParameters) : Worker(conte
             return Result.failure()
         }
 
+        // 今天已換過就跳過（避免一天換多次）
+        val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+        val lastDate = prefs.getString(KEY_LAST_DATE, "")
+        if (lastDate == today) {
+            Log.i(TAG, "今天已換過桌布 ($today)，跳過")
+            return Result.success()
+        }
+
         val index = prefs.getInt(KEY_INDEX, 0)
         Log.i(TAG, "address=$address index=$index")
 
@@ -115,7 +127,10 @@ class WallpaperWorker(context: Context, params: WorkerParameters) : Worker(conte
                 WallpaperManager.getInstance(applicationContext).setStream(stream)
             }
 
-            prefs.edit().putInt(KEY_INDEX, index + 1).apply()
+            prefs.edit()
+                .putInt(KEY_INDEX, index + 1)
+                .putString(KEY_LAST_DATE, today)
+                .apply()
             Log.i(TAG, "換桌布完成！下次 index=${index + 1}")
             writeDebugStatus(applicationContext, "success", "wallpaper updated index=${index + 1}")
             Result.success()

@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- 背景漸層：深紫 → 深藍 -->
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#1a0533"/>
+      <stop offset="100%" stop-color="#0d1f6e"/>
+    </linearGradient>
+    <!-- 畫框光暈 -->
+    <linearGradient id="frameGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#a855f7"/>
+      <stop offset="50%"  stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#06b6d4"/>
+    </linearGradient>
+    <!-- NFT 圖片區漸層 -->
+    <linearGradient id="artGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+    <!-- 底部 glow -->
+    <radialGradient id="glow" cx="50%" cy="60%" r="50%">
+      <stop offset="0%"   stop-color="#a855f7" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#a855f7" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="16" flood-color="#a855f7" flood-opacity="0.5"/>
+    </filter>
+    <clipPath id="artClip">
+      <rect x="116" y="106" width="280" height="230" rx="8"/>
+    </clipPath>
+  </defs>
+
+  <!-- 背景 -->
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+
+  <!-- 底部 glow -->
+  <ellipse cx="256" cy="400" rx="200" ry="80" fill="url(#glow)"/>
+
+  <!-- 畫框外框（漸層邊框）-->
+  <rect x="96" y="86" width="320" height="270" rx="20" fill="url(#frameGrad)" filter="url(#shadow)"/>
+
+  <!-- 畫框內白邊 -->
+  <rect x="104" y="94" width="304" height="254" rx="15" fill="#1e1040"/>
+
+  <!-- NFT 圖片區 -->
+  <rect x="116" y="106" width="280" height="230" rx="8" fill="url(#artGrad)"/>
+
+  <!-- 抽象 NFT 藝術：彩色幾何圖形 -->
+  <g clip-path="url(#artClip)">
+    <!-- 背景色塊 -->
+    <rect x="116" y="106" width="280" height="230" fill="#1d1058"/>
+    <!-- 大圓 -->
+    <circle cx="220" cy="200" r="90" fill="#7c3aed" opacity="0.7"/>
+    <circle cx="310" cy="240" r="70" fill="#2563eb" opacity="0.7"/>
+    <!-- 亮點 -->
+    <circle cx="200" cy="165" r="35" fill="#c084fc" opacity="0.8"/>
+    <circle cx="320" cy="170" r="25" fill="#38bdf8" opacity="0.9"/>
+    <!-- 菱形 -->
+    <polygon points="256,130 290,175 256,220 222,175" fill="#f0abfc" opacity="0.6"/>
+    <!-- 小裝飾點 -->
+    <circle cx="160" cy="290" r="12" fill="#a78bfa"/>
+    <circle cx="360" cy="130" r="8"  fill="#67e8f9"/>
+    <circle cx="370" cy="300" r="15" fill="#818cf8"/>
+    <!-- 橫線裝飾 -->
+    <line x1="116" y1="268" x2="396" y2="268" stroke="#a855f7" stroke-width="1.5" opacity="0.4"/>
+  </g>
+
+  <!-- 畫框底部標牌 -->
+  <rect x="176" y="345" width="160" height="38" rx="10" fill="#2d1b69"/>
+  <rect x="178" y="347" width="156" height="34" rx="9" fill="none" stroke="url(#frameGrad)" stroke-width="1.5"/>
+
+  <!-- NFT 文字 -->
+  <text x="256" y="371" text-anchor="middle" font-family="'Arial Black', sans-serif"
+        font-size="18" font-weight="900" letter-spacing="4" fill="url(#frameGrad)">NFT</text>
+
+  <!-- 底部 app 名稱 -->
+  <text x="256" y="430" text-anchor="middle" font-family="Arial, sans-serif"
+        font-size="22" font-weight="700" letter-spacing="1" fill="#e2d9f3">Wallpaper</text>
+
+  <!-- 底部裝飾點 -->
+  <circle cx="195" cy="456" r="4" fill="#a855f7" opacity="0.8"/>
+  <circle cx="212" cy="456" r="4" fill="#6366f1" opacity="0.8"/>
+  <circle cx="229" cy="456" r="4" fill="#06b6d4" opacity="0.8"/>
+  <circle cx="283" cy="456" r="4" fill="#06b6d4" opacity="0.8"/>
+  <circle cx="300" cy="456" r="4" fill="#6366f1" opacity="0.8"/>
+  <circle cx="317" cy="456" r="4" fill="#a855f7" opacity="0.8"/>
+</svg>

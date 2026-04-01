@@ -1,30 +1,46 @@
 {
   "expo": {
-    "name": "nft-wallpaper",
+    "name": "NFT Wallpaper",
     "slug": "nft-wallpaper",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
+    "scheme": "nftwallpaper",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#0f0f1a"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.nftwallpaper.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "掃描錢包 QR Code 以取得以太坊地址"
+      }
     },
     "android": {
+      "package": "com.nftwallpaper.app",
+      "permissions": ["android.permission.CAMERA", "android.permission.SET_WALLPAPER"],
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#0f0f1a",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [{"scheme": "nftwallpaper"}],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": ["./plugins/withWallpaperModule"]
   }
 }

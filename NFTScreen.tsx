@@ -27,7 +27,6 @@ import { useTranslation } from 'react-i18next';
 const ALCHEMY_API_KEY = process.env.EXPO_PUBLIC_ALCHEMY_API_KEY ?? 'YOUR_ALCHEMY_API_KEY';
 const PAGE_SIZE = 20;
 const STORAGE_KEY_WALLPAPER = 'nft_wallpaper_current';
-const STORAGE_KEY_AUTO_ENABLED = 'auto_wallpaper_enabled';
 const STORAGE_KEY_AUTO_INDEX = 'auto_wallpaper_index';
 const STORAGE_KEY_AUTO_LAST_TS = 'auto_wallpaper_last_ts';
 const AUTO_INTERVAL_MS = 15 * 60 * 1000;
@@ -351,7 +350,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
   const [selectedNFT, setSelectedNFT] = useState<NFTItem | null>(null);
   const [settingWallpaper, setSettingWallpaper] = useState(false);
   const [currentWallpaper, setCurrentWallpaper] = useState<WallpaperRecord | null>(null);
-  const [autoEnabled, setAutoEnabled] = useState(false);
+  const autoEnabled = true;
   const [autoTick, setAutoTick] = useState(0);
   const [workerDebug, setWorkerDebug] = useState<WorkerDebugStatus | null>(null);
 
@@ -473,25 +472,17 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
     setSelectedNFT(null);
   }, [selectedAddress]);
 
-  // 首次載入 + 讀取設定
+  // 首次載入 + 讀取設定，自動模式永遠啟用
   useEffect(() => {
     loadPage(undefined);
-    AsyncStorage.multiGet([STORAGE_KEY_WALLPAPER, STORAGE_KEY_AUTO_ENABLED]).then(
-      async ([[, wallRaw], [, autoRaw]]) => {
-        if (wallRaw) setCurrentWallpaper(JSON.parse(wallRaw));
-        if (autoRaw === 'true') {
-          setAutoEnabled(true);
-          // 每次 mount 都重新存一次，確保 Worker 有最新的 address/apiKey
-          try {
-            await saveWalletSettings(address, ALCHEMY_API_KEY);
-            await scheduleDailyWallpaper(true);
-            console.log('[AutoWallpaper] App 啟動後已重新排程 WorkManager（每 15 分鐘）');
-          } catch (e: any) {
-            console.warn('[AutoWallpaper] App 啟動重新排程失敗:', e?.message);
-          }
-        }
-      }
-    );
+    AsyncStorage.getItem(STORAGE_KEY_WALLPAPER).then(wallRaw => {
+      if (wallRaw) setCurrentWallpaper(JSON.parse(wallRaw));
+    });
+    // 每次 mount 都重新存一次，確保 Worker 有最新的 address/apiKey
+    saveWalletSettings(address, ALCHEMY_API_KEY)
+      .then(() => scheduleDailyWallpaper(true))
+      .then(() => console.log('[AutoWallpaper] WorkManager 已排程'))
+      .catch(e => console.warn('[AutoWallpaper] 排程失敗:', e?.message));
   }, [loadPage, address]);
 
   const goNextPage = useCallback(() => {
@@ -534,28 +525,6 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
     }
   }, [selectedNFT, address]);
 
-  const handleToggleAuto = useCallback(async () => {
-    const next = !autoEnabled;
-    setAutoEnabled(next);
-    await AsyncStorage.setItem(STORAGE_KEY_AUTO_ENABLED, String(next));
-    if (next) {
-      // 儲存設定到 SharedPreferences 供 WorkManager Worker 使用
-      try {
-        await saveWalletSettings(address, ALCHEMY_API_KEY);
-        await scheduleDailyWallpaper(true);
-        console.log('[AutoWallpaper] WorkManager 已排程（每 15 分鐘）');
-      } catch (e: any) {
-        console.warn('[AutoWallpaper] WorkManager 排程失敗:', e?.message);
-      }
-    } else {
-      try {
-        await scheduleDailyWallpaper(false);
-        console.log('[AutoWallpaper] WorkManager 已取消排程');
-      } catch (e: any) {
-        console.warn('[AutoWallpaper] WorkManager 取消失敗:', e?.message);
-      }
-    }
-  }, [autoEnabled, address]);
 
   const shortenAddress = (addr: string) => `${addr.slice(0, 6)}...${addr.slice(-4)}`;
   const today = new Date().toDateString();
@@ -622,28 +591,6 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
             </Text>
           )}
         </View>
-        {/* 每日自動換開關 */}
-        <TouchableOpacity
-          style={[styles.autoToggleBtn, autoEnabled && styles.autoToggleBtnOn]}
-          onPress={handleToggleAuto}
-        >
-          <Text style={styles.autoToggleText}>{autoEnabled ? '🔄 自動' : '🔄 手動'}</Text>
-        </TouchableOpacity>
-        {autoEnabled && (
-          <TouchableOpacity
-            style={styles.testWorkerBtn}
-            onPress={async () => {
-              try {
-                await testWorkerNow();
-                console.log('[AutoWallpaper] Worker 已觸發，請查看 logcat: WallpaperWorker');
-              } catch (e: any) {
-                console.warn('[AutoWallpaper] 觸發失敗:', e?.message);
-              }
-            }}
-          >
-            <Text style={styles.testWorkerText}>▶ 立即測試</Text>
-          </TouchableOpacity>
-        )}
         <TouchableOpacity
           style={[styles.wallpaperBtn, settingWallpaper && styles.btnDisabled]}
           onPress={handleSetWallpaper}
@@ -657,12 +604,10 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
         </TouchableOpacity>
       </View>
 
-      {/* 自動更新提示 */}
+      {/* 每日換桌布提示 */}
       {!wallpaperSetToday && currentWallpaper && currentWallpaper.address === address && (
         <View style={styles.dailyBanner}>
-          <Text style={styles.dailyBannerText}>
-            ⏱ 自動模式啟用中：每 15 分鐘更新一次桌布
-          </Text>
+          <Text style={styles.dailyBannerText}>{t('daily_banner')}</Text>
         </View>
       )}
       {DEBUG_SHOW_WORKER_STATUS && Platform.OS === 'android' && (

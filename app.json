@@ -23,10 +23,8 @@
       "package": "com.nftwallpaper.app",
       "permissions": ["android.permission.CAMERA", "android.permission.SET_WALLPAPER"],
       "adaptiveIcon": {
-        "backgroundColor": "#0f0f1a",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#050f1e"
       },
       "predictiveBackGestureEnabled": false,
       "intentFilters": [

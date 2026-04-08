@@ -59,9 +59,12 @@ export default {
   download_failed: 'Image download failed',
 
   // Auto wallpaper
-  auto_wallpaper: 'Daily Auto Wallpaper',
+  auto_wallpaper: 'Auto Wallpaper',
   auto_on: 'On',
   auto_off: 'Off',
+  interval_label: 'Update interval',
+  interval_15min: 'Every 15 min',
+  interval_daily: 'Daily',
 
   // Wallet chips
   add_wallet: '+ Add Wallet',

@@ -4,16 +4,10 @@ module.exports = function withWallpaperModule(config) {
   return withMainApplication(config, (mod) => {
     let contents = mod.modResults.contents;
 
-    // 注入 import（找 package 宣告後第一個 import 前插入）
-    if (!contents.includes('import com.nftwallpaper.app.WallpaperPackage')) {
-      // 在第一個 import 行前面插入
-      contents = contents.replace(
-        /(import\s)/,
-        'import com.nftwallpaper.app.WallpaperPackage\n$1'
-      );
-    }
+    // WallpaperPackage is in the same package (com.nftwallpaper.app),
+    // so NO import is needed in Kotlin — same-package classes are always visible.
 
-    // 注入 add(WallpaperPackage())
+    // Inject add(WallpaperPackage()) into PackageList.packages.apply block
     if (!contents.includes('add(WallpaperPackage())')) {
       contents = contents.replace(
         /PackageList\(this\)\.packages\.apply \{[\s\S]*?\}/,

@@ -19,10 +19,12 @@ export async function saveWalletSettings(address: string, apiKey: string): Promi
   return WallpaperModule.saveWalletSettings(address, apiKey);
 }
 
-/** 啟用或停用自動換桌布（Android WorkManager，間隔由原生端設定） */
-export async function scheduleDailyWallpaper(enabled: boolean): Promise<void> {
+export type WallpaperInterval = '15min' | 'daily';
+
+/** 啟用或停用自動換桌布（Android WorkManager） */
+export async function scheduleDailyWallpaper(enabled: boolean, interval: WallpaperInterval = 'daily'): Promise<void> {
   checkModule();
-  return WallpaperModule.scheduleDailyWallpaper(enabled);
+  return WallpaperModule.scheduleDailyWallpaper(enabled, interval);
 }
 
 /** 立即觸發一次 Worker（測試用） */

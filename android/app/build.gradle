@@ -155,7 +155,6 @@ android {
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
-    implementation("androidx.work:work-runtime-ktx:2.9.0")
 
     def isGifEnabled = (findProperty('expo.gif.enabled') ?: "") == "true";
     def isWebpEnabled = (findProperty('expo.webp.enabled') ?: "") == "true";
@@ -180,4 +179,6 @@ dependencies {
     } else {
         implementation jscFlavor
     }
+
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
 }

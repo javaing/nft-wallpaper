@@ -21,6 +21,7 @@ import {
   testWorkerNow,
   getWorkerDebugStatus,
   type WorkerDebugStatus,
+  type WallpaperInterval,
 } from './WallpaperManager';
 import { useTranslation } from 'react-i18next';
 
@@ -29,7 +30,11 @@ const PAGE_SIZE = 20;
 const STORAGE_KEY_WALLPAPER = 'nft_wallpaper_current';
 const STORAGE_KEY_AUTO_INDEX = 'auto_wallpaper_index';
 const STORAGE_KEY_AUTO_LAST_TS = 'auto_wallpaper_last_ts';
-const AUTO_INTERVAL_MS = 15 * 60 * 1000;
+const STORAGE_KEY_INTERVAL = 'wallpaper_interval';
+const INTERVAL_MS: Record<WallpaperInterval, number> = {
+  '15min': 15 * 60 * 1000,
+  'daily': 24 * 60 * 60 * 1000,
+};
 const DEBUG_SHOW_WORKER_STATUS = __DEV__;
 const PRELOAD_URI = `${FileSystem.cacheDirectory}nft_wallpaper_preload.jpg`;
 
@@ -351,6 +356,8 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
   const [settingWallpaper, setSettingWallpaper] = useState(false);
   const [currentWallpaper, setCurrentWallpaper] = useState<WallpaperRecord | null>(null);
   const autoEnabled = true;
+  const [interval, setIntervalPref] = useState<WallpaperInterval>('daily');
+  const [showIntervalOptions, setShowIntervalOptions] = useState(false);
   const [autoTick, setAutoTick] = useState(0);
   const [workerDebug, setWorkerDebug] = useState<WorkerDebugStatus | null>(null);
 
@@ -407,7 +414,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
       async ([[, wallRaw], [, idxRaw], [, lastTsRaw]]) => {
         const wall: WallpaperRecord | null = wallRaw ? JSON.parse(wallRaw) : null;
         const lastTs = lastTsRaw ? parseInt(lastTsRaw, 10) : 0;
-        if (!Number.isNaN(lastTs) && lastTs > 0 && now - lastTs < AUTO_INTERVAL_MS) return;
+        if (!Number.isNaN(lastTs) && lastTs > 0 && now - lastTs < INTERVAL_MS[interval]) return;
 
         const prevIdx = idxRaw ? parseInt(idxRaw, 10) : 0;
         const nextIdx = (prevIdx + 1) % nfts.length;
@@ -433,7 +440,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
         }
       }
     );
-  }, [autoEnabled, loading, nfts, address, autoTick]);
+  }, [autoEnabled, loading, nfts, address, autoTick, interval]);
 
   const loadPage = useCallback(
     async (pageKey: string | undefined) => {
@@ -475,15 +482,23 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
   // 首次載入 + 讀取設定，自動模式永遠啟用
   useEffect(() => {
     loadPage(undefined);
-    AsyncStorage.getItem(STORAGE_KEY_WALLPAPER).then(wallRaw => {
-      if (wallRaw) setCurrentWallpaper(JSON.parse(wallRaw));
-    });
-    // 每次 mount 都重新存一次，確保 Worker 有最新的 address/apiKey
+    AsyncStorage.multiGet([STORAGE_KEY_WALLPAPER, STORAGE_KEY_INTERVAL]).then(
+      ([[, wallRaw], [, savedInterval]]) => {
+        if (wallRaw) setCurrentWallpaper(JSON.parse(wallRaw));
+        if (savedInterval === '15min' || savedInterval === 'daily') {
+          setIntervalPref(savedInterval);
+        }
+      }
+    );
+  }, [loadPage]);
+
+  // 每次 address 或 interval 變更都重新排程 Worker
+  useEffect(() => {
     saveWalletSettings(address, ALCHEMY_API_KEY)
-      .then(() => scheduleDailyWallpaper(true))
-      .then(() => console.log('[AutoWallpaper] WorkManager 已排程'))
+      .then(() => scheduleDailyWallpaper(true, interval))
+      .then(() => console.log('[AutoWallpaper] WorkManager 已排程, interval=', interval))
       .catch(e => console.warn('[AutoWallpaper] 排程失敗:', e?.message));
-  }, [loadPage, address]);
+  }, [address, interval]);
 
   const goNextPage = useCallback(() => {
     if (!nextPageKey) return;
@@ -542,9 +557,9 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
         </TouchableOpacity>
       </View>
 
-      {/* Wallet Chips */}
+      {/* Wallet Chips + Gear */}
       <View style={styles.walletRow}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.walletChips}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.walletChips} style={{ flex: 1 }}>
           {wallets.map(addr => {
             const chain = detectChain(addr);
             const isSelected = addr === selectedAddress;
@@ -576,7 +591,34 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
             </TouchableOpacity>
           )}
         </ScrollView>
+        <TouchableOpacity
+          style={[styles.gearBtn, showIntervalOptions && styles.gearBtnActive]}
+          onPress={() => setShowIntervalOptions(v => !v)}
+        >
+          <Text style={styles.gearIcon}>⚙</Text>
+        </TouchableOpacity>
       </View>
+
+      {/* 更新頻率選項（點齒輪展開） */}
+      {showIntervalOptions && (
+        <View style={styles.intervalPanel}>
+          <Text style={styles.intervalLabel}>{t('interval_label')}：</Text>
+          {(['15min', 'daily'] as WallpaperInterval[]).map(opt => (
+            <TouchableOpacity
+              key={opt}
+              style={[styles.intervalChip, interval === opt && styles.intervalChipActive]}
+              onPress={() => {
+                setIntervalPref(opt);
+                AsyncStorage.setItem(STORAGE_KEY_INTERVAL, opt);
+              }}
+            >
+              <Text style={[styles.intervalChipText, interval === opt && styles.intervalChipTextActive]}>
+                {t(opt === '15min' ? 'interval_15min' : 'interval_daily')}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
 
       {/* Set Wallpaper Bar */}
       <View style={styles.wallpaperBar}>
@@ -723,7 +765,17 @@ const styles = StyleSheet.create({
   backText: { color: '#a78bfa', fontSize: 16 },
   headerTitle: { color: '#fff', fontSize: 18, fontWeight: '700' },
   refreshBtn: { padding: 8 },
-  walletRow: { backgroundColor: '#111827', paddingVertical: 6 },
+  walletRow: { backgroundColor: '#111827', paddingVertical: 6, flexDirection: 'row', alignItems: 'center' },
+  gearBtn: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+    borderRadius: 18,
+  },
+  gearBtnActive: { backgroundColor: '#1e293b' },
+  gearIcon: { fontSize: 18, color: '#6b7280' },
   walletChips: { paddingHorizontal: 12, gap: 8, flexDirection: 'row', alignItems: 'center' },
   walletChip: {
     borderWidth: 1,
@@ -790,6 +842,31 @@ const styles = StyleSheet.create({
   testWorkerText: { color: '#93c5fd', fontSize: 12, fontWeight: '600' },
 
   // Daily banner
+  intervalPanel: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0f172a',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    gap: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+  },
+  intervalLabel: { color: '#94a3b8', fontSize: 12 },
+  intervalChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+    backgroundColor: '#1e293b',
+  },
+  intervalChipActive: {
+    borderColor: '#7c3aed',
+    backgroundColor: '#4c1d95',
+  },
+  intervalChipText: { color: '#94a3b8', fontSize: 12 },
+  intervalChipTextActive: { color: '#e9d5ff', fontWeight: '700' },
   dailyBanner: {
     backgroundColor: '#1e3a5f',
     paddingHorizontal: 16,

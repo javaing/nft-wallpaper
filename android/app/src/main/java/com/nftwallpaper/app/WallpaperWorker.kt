@@ -4,233 +4,222 @@ import android.app.WallpaperManager
 import android.content.Context
 import android.util.Log
 import androidx.work.*
+import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.TimeUnit
 
-class WallpaperWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
+class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
+    Worker(context, workerParams) {
 
     companion object {
-        const val TAG       = "WallpaperWorker"
-        const val PREFS_NAME = "nft_wallpaper_prefs"
+        const val PREFS_NAME = "WallpaperWorkerPrefs"
         const val KEY_ADDRESS = "wallet_address"
         const val KEY_API_KEY = "alchemy_api_key"
-        const val KEY_INDEX  = "auto_index"
-        const val KEY_LAST_DATE = "last_wallpaper_date"
-        const val KEY_LAST_RUN_AT = "debug_last_run_at"
-        const val KEY_LAST_RESULT = "debug_last_result"
-        const val KEY_LAST_MESSAGE = "debug_last_message"
-        const val WORK_NAME  = "periodic_wallpaper_worker"
-        const val WORK_NAME_TEST = "test_wallpaper_worker"
+        const val KEY_INDEX = "nft_index"
+        const val KEY_LAST_DATE = "last_date"
+        const val KEY_LAST_RUN_AT = "last_run_at"
+        const val KEY_LAST_RESULT = "last_result"
+        const val KEY_LAST_MESSAGE = "last_message"
+        const val WORK_NAME = "daily_wallpaper_work"
+        const val KEY_INTERVAL = "worker_interval"
+        const val INTERVAL_15MIN = "15min"
+        const val INTERVAL_DAILY = "daily"
 
-        fun schedule(context: Context) {
-            Log.i(TAG, "排程自動換桌布 (WorkManager, 15 分鐘)")
-            val constraints = Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.CONNECTED)
+        fun schedule(context: Context, interval: String = INTERVAL_DAILY) {
+            val intervalAmount = if (interval == INTERVAL_15MIN) 15L else 1L
+            val intervalUnit = if (interval == INTERVAL_15MIN) TimeUnit.MINUTES else TimeUnit.DAYS
+            val request = PeriodicWorkRequestBuilder<WallpaperWorker>(intervalAmount, intervalUnit)
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build()
+                )
                 .build()
-            val request = PeriodicWorkRequestBuilder<WallpaperWorker>(15, TimeUnit.MINUTES)
-                .setConstraints(constraints)
-                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.MINUTES)
-                .build()
-            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-                WORK_NAME,
-                ExistingPeriodicWorkPolicy.UPDATE,
-                request
-            )
-            Log.i(TAG, "排程完成，每 15 分鐘執行一次")
-        }
-
-        fun runNow(context: Context) {
-            Log.i(TAG, "立即觸發 Worker 測試")
-            val request = OneTimeWorkRequestBuilder<WallpaperWorker>()
-                .setConstraints(Constraints.Builder()
-                    .setRequiredNetworkType(NetworkType.CONNECTED)
-                    .build())
-                .build()
-            WorkManager.getInstance(context).enqueueUniqueWork(
-                WORK_NAME_TEST,
-                ExistingWorkPolicy.REPLACE,
-                request
-            )
+            WorkManager.getInstance(context)
+                .enqueueUniquePeriodicWork(
+                    WORK_NAME,
+                    ExistingPeriodicWorkPolicy.UPDATE,
+                    request
+                )
         }
 
         fun cancel(context: Context) {
-            Log.i(TAG, "取消自動換桌布排程")
             WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
         }
 
-        private fun writeDebugStatus(context: Context, result: String, message: String) {
-            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .edit()
-                .putLong(KEY_LAST_RUN_AT, System.currentTimeMillis())
-                .putString(KEY_LAST_RESULT, result)
-                .putString(KEY_LAST_MESSAGE, message)
-                .apply()
+        fun runNow(context: Context) {
+            val request = OneTimeWorkRequestBuilder<WallpaperWorker>()
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build()
+                )
+                .build()
+            WorkManager.getInstance(context).enqueue(request)
         }
     }
 
     override fun doWork(): Result {
-        Log.i(TAG, "doWork() 開始")
         val prefs = applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val address = prefs.getString(KEY_ADDRESS, null)
-        val apiKey  = prefs.getString(KEY_API_KEY,  null)
+        val addressRaw = prefs.getString(KEY_ADDRESS, null)
+        val apiKey = prefs.getString(KEY_API_KEY, null)
 
-        if (address.isNullOrEmpty()) {
-            Log.e(TAG, "address 未設定")
-            writeDebugStatus(applicationContext, "failure", "address not set")
-            return Result.failure()
-        }
-        if (apiKey.isNullOrEmpty()) {
-            Log.e(TAG, "apiKey 未設定")
-            writeDebugStatus(applicationContext, "failure", "apiKey not set")
+        if (addressRaw.isNullOrBlank()) {
+            saveResult(prefs, "error", "address 未設定")
             return Result.failure()
         }
 
-        // 今天已換過就跳過（避免一天換多次）
-        val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-        val lastDate = prefs.getString(KEY_LAST_DATE, "")
-        if (lastDate == today) {
-            Log.i(TAG, "今天已換過桌布 ($today)，跳過")
-            return Result.success()
+        val addresses = try {
+            val arr = JSONArray(addressRaw)
+            (0 until arr.length()).map { arr.getString(it) }
+        } catch (e: Exception) {
+            listOf(addressRaw)
         }
 
-        val index = prefs.getInt(KEY_INDEX, 0)
-        Log.i(TAG, "address=$address index=$index")
+        val allNfts = mutableListOf<String>()
 
-        val isTezos = address.matches(Regex("^tz[123][1-9A-HJ-NP-Za-km-z]{33}$"))
+        for (address in addresses) {
+            val addr = address.trim()
+            if (addr.startsWith("tz") || addr.startsWith("KT")) {
+                fetchTezosNfts(addr, allNfts)
+            } else if (addr.isNotBlank() && !apiKey.isNullOrBlank()) {
+                fetchEthereumNfts(addr, apiKey, allNfts)
+            }
+        }
+
+        if (allNfts.isEmpty()) {
+            saveResult(prefs, "error", "無 NFT 可設定")
+            return Result.failure()
+        }
+
+        var index = prefs.getInt(KEY_INDEX, 0)
+        if (index >= allNfts.size) index = 0
+        val imageUrl = allNfts[index]
+        val nextIndex = (index + 1) % allNfts.size
+
         return try {
-            val nfts = if (isTezos) fetchTezosNFTs(address) else fetchNFTs(address, apiKey)
-            Log.i(TAG, "取得 NFT 數量: ${nfts.size} (${if (isTezos) "Tezos" else "Ethereum"})")
-            if (nfts.isEmpty()) {
-                Log.e(TAG, "NFT 清單為空")
-                writeDebugStatus(applicationContext, "failure", "nft list empty")
-                return Result.failure()
-            }
-
-            val imageUrl = nfts[index % nfts.size]
-            Log.i(TAG, "下載圖片: $imageUrl")
-            val conn = URL(imageUrl).openConnection() as HttpURLConnection
-            conn.connectTimeout = 20_000
-            conn.readTimeout    = 20_000
-            conn.instanceFollowRedirects = true
-            val code = conn.responseCode
-            if (code != 200) {
-                Log.e(TAG, "圖片 HTTP $code")
-                writeDebugStatus(applicationContext, "retry", "image http $code")
-                return Result.retry()
-            }
-            conn.inputStream.use { stream ->
+            val file = downloadImage(imageUrl)
+            file.inputStream().use { stream ->
                 WallpaperManager.getInstance(applicationContext).setStream(stream)
             }
-
+            file.delete()
             prefs.edit()
-                .putInt(KEY_INDEX, index + 1)
-                .putString(KEY_LAST_DATE, today)
+                .putInt(KEY_INDEX, nextIndex)
+                .putLong(KEY_LAST_RUN_AT, System.currentTimeMillis())
+                .putString(KEY_LAST_RESULT, "success")
+                .putString(KEY_LAST_MESSAGE, "設定 NFT #$index / ${allNfts.size}")
                 .apply()
-            Log.i(TAG, "換桌布完成！下次 index=${index + 1}")
-            writeDebugStatus(applicationContext, "success", "wallpaper updated index=${index + 1}")
+            Log.d("WallpaperWorker", "壁紙設定成功 index=$index total=${allNfts.size}")
             Result.success()
         } catch (e: Exception) {
-            Log.e(TAG, "doWork 失敗: ${e.message}", e)
-            writeDebugStatus(applicationContext, "retry", e.message ?: "unknown error")
-            Result.retry()
+            Log.e("WallpaperWorker", "doWork error: ${e.message}")
+            saveResult(prefs, "error", e.message ?: "Unknown error")
+            Result.failure()
         }
     }
 
-    /** Fetch up to 100 NFT image URLs，先試 v2，失敗再試 v3 */
-    private fun fetchNFTs(address: String, apiKey: String): List<String> {
-        val urlV2 = "https://eth-mainnet.g.alchemy.com/v2/$apiKey/getNFTs" +
-                    "?owner=$address&withMetadata=true&pageSize=100"
-        val urlV3 = "https://eth-mainnet.g.alchemy.com/nft/v3/$apiKey/getNFTsForOwner" +
-                    "?owner=$address&withMetadata=true&pageSize=100"
-
-        var body: String? = null
-        var isV3 = false
-
-        // 嘗試 v2
+    private fun fetchEthereumNfts(address: String, apiKey: String, out: MutableList<String>) {
         try {
-            val conn = URL(urlV2).openConnection() as HttpURLConnection
-            conn.connectTimeout = 15_000; conn.readTimeout = 15_000
-            val code = conn.responseCode
-            Log.i(TAG, "Alchemy v2 HTTP $code")
-            if (code == 200) body = conn.inputStream.bufferedReader().readText()
-            else conn.errorStream?.close()
-        } catch (e: Exception) { Log.w(TAG, "v2 失敗: ${e.message}") }
-
-        // v2 失敗則嘗試 v3
-        if (body == null) {
-            val conn = URL(urlV3).openConnection() as HttpURLConnection
-            conn.connectTimeout = 15_000; conn.readTimeout = 15_000
-            val code = conn.responseCode
-            Log.i(TAG, "Alchemy v3 HTTP $code")
-            if (code == 200) { body = conn.inputStream.bufferedReader().readText(); isV3 = true }
-            else conn.errorStream?.close()
-        }
-
-        if (body == null) { Log.e(TAG, "Alchemy API 全部失敗"); return emptyList() }
-
-        val arr = JSONObject(body).getJSONArray("ownedNfts")
-
-        val result = mutableListOf<String>()
-        for (i in 0 until arr.length()) {
-            val nft = arr.getJSONObject(i)
-            val raw: String? = if (isV3) {
-                // v3: nft.image.cachedUrl / originalUrl
-                val img = nft.optJSONObject("image")
-                img?.optString("cachedUrl")?.takeIf { it.isNotEmpty() }
-                    ?: img?.optString("originalUrl")?.takeIf { it.isNotEmpty() }
-            } else {
-                // v2: nft.media[0].gateway / thumbnail
+            val url = "https://eth-mainnet.g.alchemy.com/nft/v2/$apiKey/getNFTs?owner=$address&withMetadata=true&pageSize=100"
+            val json = httpGet(url) ?: return
+            val obj = JSONObject(json)
+            val nfts = obj.optJSONArray("ownedNfts") ?: return
+            for (i in 0 until nfts.length()) {
+                val nft = nfts.getJSONObject(i)
                 val mediaArr = nft.optJSONArray("media")
-                if (mediaArr != null && mediaArr.length() > 0) {
-                    val m = mediaArr.getJSONObject(0)
-                    m.optString("gateway").takeIf { it.isNotEmpty() }
-                        ?: m.optString("thumbnail").takeIf { it.isNotEmpty() }
-                } else {
-                    nft.optJSONObject("metadata")?.optString("image")?.takeIf { it.isNotEmpty() }
+                val imageUrl = mediaArr?.optJSONObject(0)?.optString("gateway", "")
+                    ?: nft.optJSONObject("metadata")?.optString("image", "")
+                    ?: ""
+                val resolved = resolveIpfs(imageUrl)
+                if (resolved.startsWith("http://") || resolved.startsWith("https://")) {
+                    out.add(resolved)
                 }
             }
-            val resolved = raw?.let { resolveUrl(it) }
-            if (!resolved.isNullOrEmpty()) result.add(resolved)
+            Log.d("WallpaperWorker", "Ethereum NFTs fetched: ${out.size} from $address")
+        } catch (e: Exception) {
+            Log.e("WallpaperWorker", "fetchEthereumNfts error: ${e.message}")
         }
-        Log.i(TAG, "解析後有效圖片數: ${result.size}")
-        return result
     }
 
-    /** Fetch Tezos NFT image URLs via TzKT */
-    private fun fetchTezosNFTs(address: String): List<String> {
-        val url = "https://api.tzkt.io/v1/tokens/balances" +
-                  "?account=$address&limit=100&offset=0&token.standard=fa2"
-        val conn = URL(url).openConnection() as HttpURLConnection
-        conn.connectTimeout = 15_000; conn.readTimeout = 15_000
-        val code = conn.responseCode
-        Log.i(TAG, "TzKT HTTP $code")
-        if (code != 200) { conn.errorStream?.close(); return emptyList() }
-        val body = conn.inputStream.bufferedReader().readText()
-        val arr = org.json.JSONArray(body)
-
-        val result = mutableListOf<String>()
-        for (i in 0 until arr.length()) {
-            val item = arr.getJSONObject(i)
-            val meta = item.optJSONObject("token")?.optJSONObject("metadata") ?: continue
-            val raw =
-                meta.optString("thumbnailUri").takeIf { it.isNotEmpty() }
-                    ?: meta.optString("displayUri").takeIf { it.isNotEmpty() }
-                    ?: meta.optString("artifactUri").takeIf { it.isNotEmpty() }
-                    ?: continue
-            result.add(resolveUrl(raw))
+    private fun fetchTezosNfts(address: String, out: MutableList<String>) {
+        try {
+            val url = "https://api.tzkt.io/v1/tokens/balances?account=$address&balance.gt=0&limit=100&select=token"
+            val json = httpGet(url) ?: return
+            val arr = JSONArray(json)
+            for (i in 0 until arr.length()) {
+                val tokenObj = arr.optJSONObject(i)?.optJSONObject("token") ?: continue
+                val metadata = tokenObj.optJSONObject("metadata") ?: continue
+                val displayUri = metadata.optString("displayUri", "")
+                val artifactUri = metadata.optString("artifactUri", "")
+                val thumbnailUri = metadata.optString("thumbnailUri", "")
+                val raw = listOf(displayUri, artifactUri, thumbnailUri)
+                    .firstOrNull { it.isNotBlank() } ?: continue
+                val resolved = resolveIpfs(raw)
+                if (resolved.startsWith("http://") || resolved.startsWith("https://")) {
+                    out.add(resolved)
+                }
+            }
+            Log.d("WallpaperWorker", "Tezos NFTs fetched: from $address")
+        } catch (e: Exception) {
+            Log.e("WallpaperWorker", "fetchTezosNfts error: ${e.message}")
         }
-        Log.i(TAG, "Tezos 解析後有效圖片: ${result.size}")
-        return result
     }
 
-    private fun resolveUrl(url: String) = when {
-        url.startsWith("ipfs://") -> "https://ipfs.io/ipfs/${url.substring(7)}"
-        url.startsWith("ar://")   -> "https://arweave.net/${url.substring(5)}"
-        else -> url
+    private fun resolveIpfs(url: String): String {
+        return if (url.startsWith("ipfs://")) {
+            "https://ipfs.io/ipfs/${url.removePrefix("ipfs://")}"
+        } else url
+    }
+
+    private fun downloadImage(imageUrl: String): File {
+        val conn = URL(imageUrl).openConnection() as HttpURLConnection
+        conn.setRequestProperty("User-Agent", "NFTWallpaper/1.0")
+        conn.connectTimeout = 15000
+        conn.readTimeout = 30000
+        conn.connect()
+        if (conn.responseCode != 200) {
+            conn.disconnect()
+            throw Exception("HTTP ${conn.responseCode} downloading image")
+        }
+        val file = File(applicationContext.cacheDir, "wallpaper_temp.jpg")
+        conn.inputStream.use { input ->
+            file.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        conn.disconnect()
+        return file
+    }
+
+    private fun httpGet(urlStr: String): String? {
+        return try {
+            val conn = URL(urlStr).openConnection() as HttpURLConnection
+            conn.setRequestProperty("User-Agent", "NFTWallpaper/1.0")
+            conn.connectTimeout = 15000
+            conn.readTimeout = 30000
+            conn.connect()
+            if (conn.responseCode != 200) {
+                Log.e("WallpaperWorker", "HTTP ${conn.responseCode} for $urlStr")
+                conn.disconnect()
+                return null
+            }
+            val text = conn.inputStream.bufferedReader().readText()
+            conn.disconnect()
+            text
+        } catch (e: Exception) {
+            Log.e("WallpaperWorker", "httpGet error: ${e.message}")
+            null
+        }
+    }
+
+    private fun saveResult(prefs: android.content.SharedPreferences, result: String, message: String) {
+        prefs.edit()
+            .putLong(KEY_LAST_RUN_AT, System.currentTimeMillis())
+            .putString(KEY_LAST_RESULT, result)
+            .putString(KEY_LAST_MESSAGE, message)
+            .apply()
     }
 }

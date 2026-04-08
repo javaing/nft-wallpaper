@@ -59,9 +59,12 @@ export default {
   download_failed: '圖片下載失敗',
 
   // Auto wallpaper
-  auto_wallpaper: '每日自動換桌布',
+  auto_wallpaper: '自動換桌布',
   auto_on: '開啟',
   auto_off: '關閉',
+  interval_label: '更新頻率',
+  interval_15min: '每 15 分鐘',
+  interval_daily: '每日',
 
   // Wallet chips
   add_wallet: '+ 新增錢包',

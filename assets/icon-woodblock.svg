@@ -1,0 +1,179 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- 版畫質感紋理濾鏡 -->
+    <filter id="woodblock" x="-2%" y="-2%" width="104%" height="104%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch" result="noise"/>
+      <feColorMatrix type="saturate" values="0" in="noise" result="grayNoise"/>
+      <feBlend in="SourceGraphic" in2="grayNoise" mode="multiply" result="blended"/>
+      <feComposite in="blended" in2="SourceGraphic" operator="in"/>
+    </filter>
+    <!-- 內發光 -->
+    <filter id="innerGlow">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="4" result="blur"/>
+      <feFlood flood-color="#ffd700" flood-opacity="0.3" result="color"/>
+      <feComposite in="color" in2="blur" operator="in" result="shadow"/>
+      <feMerge><feMergeNode in="shadow"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="roundedSquare">
+      <rect width="512" height="512" rx="100" ry="100"/>
+    </clipPath>
+  </defs>
+
+  <!-- 背景：深朱紅（版畫風格） -->
+  <g clip-path="url(#roundedSquare)">
+    <rect width="512" height="512" fill="#8b1a1a"/>
+    <!-- 背景版畫紋理疊層 -->
+    <rect width="512" height="512" fill="#7a1515" opacity="0.4" filter="url(#woodblock)"/>
+
+    <!-- ═══════════════════════════════════ -->
+    <!-- 外框：方形邊框（版畫粗線條感）    -->
+    <!-- ═══════════════════════════════════ -->
+    <rect x="28" y="28" width="456" height="456" rx="8"
+          fill="none" stroke="#f0c040" stroke-width="10"/>
+    <rect x="40" y="40" width="432" height="432" rx="6"
+          fill="none" stroke="#f0c040" stroke-width="3"/>
+
+    <!-- ═══════════════════════════════════ -->
+    <!-- 中心正方形（NFT 畫框）             -->
+    <!-- ═══════════════════════════════════ -->
+    <rect x="156" y="156" width="200" height="200"
+          fill="#6b1010" stroke="#f0c040" stroke-width="8"/>
+    <rect x="168" y="168" width="176" height="176"
+          fill="none" stroke="#f0c040" stroke-width="3" stroke-dasharray="8 4"/>
+
+    <!-- 中心圖案：菱形窗花 -->
+    <polygon points="256,178 278,256 256,334 234,256"
+             fill="none" stroke="#f0c040" stroke-width="6" stroke-linejoin="round"/>
+    <polygon points="178,256 256,234 334,256 256,278"
+             fill="none" stroke="#f0c040" stroke-width="6" stroke-linejoin="round"/>
+    <!-- 中心小菱形 -->
+    <polygon points="256,238 274,256 256,274 238,256"
+             fill="#f0c040"/>
+
+    <!-- ═══════════════════════════════════ -->
+    <!-- 四角窗花裝飾（版畫對稱圖案）      -->
+    <!-- ═══════════════════════════════════ -->
+
+    <!-- 左上角窗花 -->
+    <g transform="translate(84,84)">
+      <!-- 十字 -->
+      <line x1="0" y1="-36" x2="0" y2="36" stroke="#f0c040" stroke-width="5" stroke-linecap="round"/>
+      <line x1="-36" y1="0" x2="36" y2="0" stroke="#f0c040" stroke-width="5" stroke-linecap="round"/>
+      <!-- 斜線 -->
+      <line x1="-25" y1="-25" x2="25" y2="25" stroke="#f0c040" stroke-width="3" stroke-linecap="round"/>
+      <line x1="25" y1="-25" x2="-25" y2="25" stroke="#f0c040" stroke-width="3" stroke-linecap="round"/>
+      <!-- 外圈方塊 -->
+      <rect x="-38" y="-38" width="76" height="76" rx="4"
+            fill="none" stroke="#f0c040" stroke-width="4"/>
+      <!-- 小圓心 -->
+      <circle cx="0" cy="0" r="8" fill="#f0c040"/>
+      <!-- 四方小菱形 -->
+      <polygon points="0,-28 7,-21 0,-14 -7,-21" fill="#f0c040"/>
+      <polygon points="0,28 7,21 0,14 -7,21" fill="#f0c040"/>
+      <polygon points="-28,0 -21,7 -14,0 -21,-7" fill="#f0c040"/>
+      <polygon points="28,0 21,7 14,0 21,-7" fill="#f0c040"/>
+    </g>
+
+    <!-- 右上角窗花 -->
+    <g transform="translate(428,84)">
+      <line x1="0" y1="-36" x2="0" y2="36" stroke="#f0c040" stroke-width="5" stroke-linecap="round"/>
+      <line x1="-36" y1="0" x2="36" y2="0" stroke="#f0c040" stroke-width="5" stroke-linecap="round"/>
+      <line x1="-25" y1="-25" x2="25" y2="25" stroke="#f0c040" stroke-width="3" stroke-linecap="round"/>
+      <line x1="25" y1="-25" x2="-25" y2="25" stroke="#f0c040" stroke-width="3" stroke-linecap="round"/>
+      <rect x="-38" y="-38" width="76" height="76" rx="4"
+            fill="none" stroke="#f0c040" stroke-width="4"/>
+      <circle cx="0" cy="0" r="8" fill="#f0c040"/>
+      <polygon points="0,-28 7,-21 0,-14 -7,-21" fill="#f0c040"/>
+      <polygon points="0,28 7,21 0,14 -7,21" fill="#f0c040"/>
+      <polygon points="-28,0 -21,7 -14,0 -21,-7" fill="#f0c040"/>
+      <polygon points="28,0 21,7 14,0 21,-7" fill="#f0c040"/>
+    </g>
+
+    <!-- 左下角窗花 -->
+    <g transform="translate(84,428)">
+      <line x1="0" y1="-36" x2="0" y2="36" stroke="#f0c040" stroke-width="5" stroke-linecap="round"/>
+      <line x1="-36" y1="0" x2="36" y2="0" stroke="#f0c040" stroke-width="5" stroke-linecap="round"/>
+      <line x1="-25" y1="-25" x2="25" y2="25" stroke="#f0c040" stroke-width="3" stroke-linecap="round"/>
+      <line x1="25" y1="-25" x2="-25" y2="25" stroke="#f0c040" stroke-width="3" stroke-linecap="round"/>
+      <rect x="-38" y="-38" width="76" height="76" rx="4"
+            fill="none" stroke="#f0c040" stroke-width="4"/>
+      <circle cx="0" cy="0" r="8" fill="#f0c040"/>
+      <polygon points="0,-28 7,-21 0,-14 -7,-21" fill="#f0c040"/>
+      <polygon points="0,28 7,21 0,14 -7,21" fill="#f0c040"/>
+      <polygon points="-28,0 -21,7 -14,0 -21,-7" fill="#f0c040"/>
+      <polygon points="28,0 21,7 14,0 21,-7" fill="#f0c040"/>
+    </g>
+
+    <!-- 右下角窗花 -->
+    <g transform="translate(428,428)">
+      <line x1="0" y1="-36" x2="0" y2="36" stroke="#f0c040" stroke-width="5" stroke-linecap="round"/>
+      <line x1="-36" y1="0" x2="36" y2="0" stroke="#f0c040" stroke-width="5" stroke-linecap="round"/>
+      <line x1="-25" y1="-25" x2="25" y2="25" stroke="#f0c040" stroke-width="3" stroke-linecap="round"/>
+      <line x1="25" y1="-25" x2="-25" y2="25" stroke="#f0c040" stroke-width="3" stroke-linecap="round"/>
+      <rect x="-38" y="-38" width="76" height="76" rx="4"
+            fill="none" stroke="#f0c040" stroke-width="4"/>
+      <circle cx="0" cy="0" r="8" fill="#f0c040"/>
+      <polygon points="0,-28 7,-21 0,-14 -7,-21" fill="#f0c040"/>
+      <polygon points="0,28 7,21 0,14 -7,21" fill="#f0c040"/>
+      <polygon points="-28,0 -21,7 -14,0 -21,-7" fill="#f0c040"/>
+      <polygon points="28,0 21,7 14,0 21,-7" fill="#f0c040"/>
+    </g>
+
+    <!-- ═══════════════════════════════════ -->
+    <!-- 四邊中間裝飾（連接窗花的邊飾）    -->
+    <!-- ═══════════════════════════════════ -->
+
+    <!-- 上邊中間 -->
+    <g transform="translate(256,56)">
+      <rect x="-28" y="-16" width="56" height="32" rx="4"
+            fill="#6b1010" stroke="#f0c040" stroke-width="4"/>
+      <line x1="-14" y1="0" x2="14" y2="0" stroke="#f0c040" stroke-width="3"/>
+      <line x1="0" y1="-10" x2="0" y2="10" stroke="#f0c040" stroke-width="3"/>
+      <circle cx="0" cy="0" r="5" fill="#f0c040"/>
+    </g>
+    <!-- 下邊中間 -->
+    <g transform="translate(256,456)">
+      <rect x="-28" y="-16" width="56" height="32" rx="4"
+            fill="#6b1010" stroke="#f0c040" stroke-width="4"/>
+      <line x1="-14" y1="0" x2="14" y2="0" stroke="#f0c040" stroke-width="3"/>
+      <line x1="0" y1="-10" x2="0" y2="10" stroke="#f0c040" stroke-width="3"/>
+      <circle cx="0" cy="0" r="5" fill="#f0c040"/>
+    </g>
+    <!-- 左邊中間 -->
+    <g transform="translate(56,256)">
+      <rect x="-16" y="-28" width="32" height="56" rx="4"
+            fill="#6b1010" stroke="#f0c040" stroke-width="4"/>
+      <line x1="-10" y1="0" x2="10" y2="0" stroke="#f0c040" stroke-width="3"/>
+      <line x1="0" y1="-14" x2="0" y2="14" stroke="#f0c040" stroke-width="3"/>
+      <circle cx="0" cy="0" r="5" fill="#f0c040"/>
+    </g>
+    <!-- 右邊中間 -->
+    <g transform="translate(456,256)">
+      <rect x="-16" y="-28" width="32" height="56" rx="4"
+            fill="#6b1010" stroke="#f0c040" stroke-width="4"/>
+      <line x1="-10" y1="0" x2="10" y2="0" stroke="#f0c040" stroke-width="3"/>
+      <line x1="0" y1="-14" x2="0" y2="14" stroke="#f0c040" stroke-width="3"/>
+      <circle cx="0" cy="0" r="5" fill="#f0c040"/>
+    </g>
+
+    <!-- ═══════════════════════════════════ -->
+    <!-- 連結線：角到中心框的版畫線條      -->
+    <!-- ═══════════════════════════════════ -->
+    <!-- 對角斜線（版畫對稱連結） -->
+    <line x1="122" y1="122" x2="156" y2="156" stroke="#f0c040" stroke-width="3" stroke-linecap="round"/>
+    <line x1="390" y1="122" x2="356" y2="156" stroke="#f0c040" stroke-width="3" stroke-linecap="round"/>
+    <line x1="122" y1="390" x2="156" y2="356" stroke="#f0c040" stroke-width="3" stroke-linecap="round"/>
+    <line x1="390" y1="390" x2="356" y2="356" stroke="#f0c040" stroke-width="3" stroke-linecap="round"/>
+
+    <!-- 邊中心連結 -->
+    <line x1="256" y1="72" x2="256" y2="156" stroke="#f0c040" stroke-width="3" stroke-linecap="round"/>
+    <line x1="256" y1="440" x2="256" y2="356" stroke="#f0c040" stroke-width="3" stroke-linecap="round"/>
+    <line x1="72" y1="256" x2="156" y2="256" stroke="#f0c040" stroke-width="3" stroke-linecap="round"/>
+    <line x1="440" y1="256" x2="356" y2="256" stroke="#f0c040" stroke-width="3" stroke-linecap="round"/>
+
+    <!-- ═══════════════════════════════════ -->
+    <!-- 版畫紋理疊加（整體）               -->
+    <!-- ═══════════════════════════════════ -->
+    <rect width="512" height="512" fill="url(#woodGrain)" opacity="0.06"/>
+  </g>
+</svg>

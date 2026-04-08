@@ -59,9 +59,12 @@ export default {
   download_failed: '画像のダウンロードに失敗しました',
 
   // Auto wallpaper
-  auto_wallpaper: '毎日自動壁紙変更',
+  auto_wallpaper: '自動壁紙変更',
   auto_on: 'オン',
   auto_off: 'オフ',
+  interval_label: '更新頻度',
+  interval_15min: '15分ごと',
+  interval_daily: '毎日',
 
   // Wallet chips
   add_wallet: '+ ウォレット追加',

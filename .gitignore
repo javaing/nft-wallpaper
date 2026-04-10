@@ -47,3 +47,6 @@ yarn-error.*
 # generated native folders
 /ios
 # android 有自訂原生模組，不排除（由 android/.gitignore 過濾 build 產物）
+
+# Android build outputs
+android/app/release/

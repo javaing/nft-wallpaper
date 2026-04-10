@@ -65,6 +65,9 @@ export default {
   interval_label: 'Update interval',
   interval_15min: 'Every 15 min',
   interval_daily: 'Daily',
+  battery_opt_title: 'Battery Optimization',
+  battery_opt_msg: 'To ensure wallpapers update automatically in the background, please allow this app to ignore battery optimizations.',
+  battery_opt_allow: 'Allow',
 
   // Wallet chips
   add_wallet: '+ Add Wallet',

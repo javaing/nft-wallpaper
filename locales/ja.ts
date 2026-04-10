@@ -65,6 +65,9 @@ export default {
   interval_label: '更新頻度',
   interval_15min: '15分ごと',
   interval_daily: '毎日',
+  battery_opt_title: 'バッテリー最適化',
+  battery_opt_msg: 'バックグラウンドで壁紙を自動更新するため、バッテリー最適化の対象から除外することをお勧めします。',
+  battery_opt_allow: '設定する',
 
   // Wallet chips
   add_wallet: '+ ウォレット追加',

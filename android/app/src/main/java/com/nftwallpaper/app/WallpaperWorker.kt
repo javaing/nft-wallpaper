@@ -31,12 +31,8 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         fun schedule(context: Context, interval: String = INTERVAL_DAILY) {
             val intervalAmount = if (interval == INTERVAL_15MIN) 15L else 1L
             val intervalUnit = if (interval == INTERVAL_15MIN) TimeUnit.MINUTES else TimeUnit.DAYS
+            // No network constraint: let the worker decide at runtime whether to skip
             val request = PeriodicWorkRequestBuilder<WallpaperWorker>(intervalAmount, intervalUnit)
-                .setConstraints(
-                    Constraints.Builder()
-                        .setRequiredNetworkType(NetworkType.CONNECTED)
-                        .build()
-                )
                 .build()
             WorkManager.getInstance(context)
                 .enqueueUniquePeriodicWork(
@@ -51,13 +47,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         }
 
         fun runNow(context: Context) {
-            val request = OneTimeWorkRequestBuilder<WallpaperWorker>()
-                .setConstraints(
-                    Constraints.Builder()
-                        .setRequiredNetworkType(NetworkType.CONNECTED)
-                        .build()
-                )
-                .build()
+            val request = OneTimeWorkRequestBuilder<WallpaperWorker>().build()
             WorkManager.getInstance(context).enqueue(request)
         }
     }

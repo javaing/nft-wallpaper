@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>NFT Wallpaper — Feature Graphic 1024x500</title>
+<style>
+  body { margin: 0; background: #1a1a2e; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; font-family: sans-serif; }
+  #drop-area { display: flex; gap: 16px; margin-bottom: 16px; }
+  .drop-slot { width: 120px; height: 180px; border: 2px dashed #4b5563; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #9ca3af; font-size: 12px; cursor: pointer; overflow: hidden; background: #111827; position: relative; }
+  .drop-slot img { width: 100%; height: 100%; object-fit: cover; position: absolute; }
+  .drop-slot input { position: absolute; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+  canvas { border: 1px solid #374151; }
+  button { margin-top: 12px; padding: 10px 28px; background: #7c3aed; color: #fff; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
+  button:hover { background: #6d28d9; }
+  p { color: #6b7280; font-size: 12px; margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<p style="color:#a78bfa;font-size:14px;margin-bottom:8px;">① 依序選取三張截圖（NFT桌布1、NFT桌布2、App畫面）</p>
+<div id="drop-area">
+  <div class="drop-slot" id="slot0"><span id="lbl0">截圖 1<br>NFT桌布</span><input type="file" accept="image/*" onchange="loadImg(0,this)"></div>
+  <div class="drop-slot" id="slot1"><span id="lbl1">截圖 2<br>NFT桌布</span><input type="file" accept="image/*" onchange="loadImg(1,this)"></div>
+  <div class="drop-slot" id="slot2"><span id="lbl2">截圖 3<br>App畫面</span><input type="file" accept="image/*" onchange="loadImg(2,this)"></div>
+</div>
+
+<canvas id="c" width="1024" height="500"></canvas>
+<button onclick="exportPNG()">⬇ 匯出 PNG (1024×500)</button>
+<p>建議用 Chrome 開啟，截圖後直接上傳 Play Console</p>
+
+<script>
+const imgs = [null, null, null];
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+function loadImg(idx, input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const img = new Image();
+    img.onload = () => {
+      imgs[idx] = img;
+      // preview in slot
+      const slot = document.getElementById('slot' + idx);
+      let preview = slot.querySelector('img.preview');
+      if (!preview) { preview = document.createElement('img'); preview.className = 'preview'; slot.insertBefore(preview, slot.firstChild); }
+      preview.src = e.target.result;
+      document.getElementById('lbl' + idx).style.display = 'none';
+      draw();
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function drawPhone(img, x, y, w, h, angle) {
+  ctx.save();
+  ctx.translate(x + w/2, y + h/2);
+  ctx.rotate(angle * Math.PI / 180);
+
+  const r = 18; // corner radius
+  const bx = -w/2, by = -h/2;
+
+  // shadow
+  ctx.shadowColor = 'rgba(0,0,0,0.6)';
+  ctx.shadowBlur = 28;
+  ctx.shadowOffsetY = 10;
+
+  // phone body
+  ctx.beginPath();
+  ctx.roundRect(bx, by, w, h, r);
+  ctx.fillStyle = '#0d0d1a';
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+
+  // screen clip & image
+  if (img) {
+    ctx.save();
+    const pad = 4;
+    ctx.beginPath();
+    ctx.roundRect(bx + pad, by + pad, w - pad*2, h - pad*2, r - 2);
+    ctx.clip();
+    // cover fit
+    const iw = img.naturalWidth, ih = img.naturalHeight;
+    const sw = w - pad*2, sh = h - pad*2;
+    const scale = Math.max(sw/iw, sh/ih);
+    const dw = iw * scale, dh = ih * scale;
+    ctx.drawImage(img, bx + pad + (sw-dw)/2, by + pad + (sh-dh)/2, dw, dh);
+    ctx.restore();
+  }
+
+  // phone border
+  ctx.beginPath();
+  ctx.roundRect(bx, by, w, h, r);
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // notch
+  ctx.beginPath();
+  ctx.roundRect(-16, by + 6, 32, 5, 3);
+  ctx.fillStyle = '#0d0d1a';
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function draw() {
+  const W = 1024, H = 500;
+  ctx.clearRect(0, 0, W, H);
+
+  // background gradient
+  const bg = ctx.createLinearGradient(0, 0, W, H);
+  bg.addColorStop(0, '#050f1e');
+  bg.addColorStop(0.5, '#0d1b3e');
+  bg.addColorStop(1, '#1a0533');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // subtle grid dots
+  ctx.fillStyle = 'rgba(99,102,241,0.08)';
+  for (let gx = 20; gx < W; gx += 40) for (let gy = 20; gy < H; gy += 40) {
+    ctx.beginPath(); ctx.arc(gx, gy, 1.5, 0, Math.PI*2); ctx.fill();
+  }
+
+  // glow behind phones
+  const glow = ctx.createRadialGradient(680, 250, 10, 680, 250, 320);
+  glow.addColorStop(0, 'rgba(124,58,237,0.18)');
+  glow.addColorStop(1, 'transparent');
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, W, H);
+
+  // === left: branding ===
+  // logo area
+  ctx.font = 'bold 14px monospace';
+  ctx.fillStyle = '#7c3aed';
+  ctx.fillText('◈  NFT WALLPAPER', 52, 82);
+
+  // main title
+  ctx.font = 'bold 42px sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('Your NFTs,', 52, 148);
+  ctx.fillStyle = '#a78bfa';
+  ctx.fillText('Your Wallpaper.', 52, 198);
+
+  // divider
+  ctx.beginPath();
+  ctx.moveTo(52, 218); ctx.lineTo(200, 218);
+  ctx.strokeStyle = 'rgba(124,58,237,0.5)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // tagline
+  ctx.font = '15px sans-serif';
+  ctx.fillStyle = '#94a3b8';
+  const lines = ['連結 Ethereum / Tezos 錢包', '自動輪換 NFT 為桌布', '支援 15分鐘 / 每日 更新'];
+  lines.forEach((l, i) => {
+    ctx.fillStyle = 'rgba(124,58,237,0.8)';
+    ctx.fillText('▸', 52, 250 + i * 28);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText(l, 70, 250 + i * 28);
+  });
+
+  // chains badge
+  ['ETH', 'XTZ'].forEach((c, i) => {
+    const bx = 52 + i * 68, by = 348;
+    ctx.beginPath(); ctx.roundRect(bx, by, 56, 24, 12);
+    ctx.fillStyle = i === 0 ? 'rgba(99,102,241,0.25)' : 'rgba(13,148,136,0.25)';
+    ctx.fill();
+    ctx.strokeStyle = i === 0 ? '#6366f1' : '#0d9488';
+    ctx.lineWidth = 1; ctx.stroke();
+    ctx.font = 'bold 12px monospace';
+    ctx.fillStyle = i === 0 ? '#a5b4fc' : '#5eead4';
+    ctx.textAlign = 'center';
+    ctx.fillText(c, bx + 28, by + 16);
+    ctx.textAlign = 'left';
+  });
+
+  // === right: phones ===
+  // phone dimensions (portrait, phone aspect ~9:19)
+  const pw = 148, ph = 268;
+
+  // phone 1 — left, slight tilt
+  drawPhone(imgs[0], 430, 90, pw, ph, -5);
+  // phone 2 — center, larger, upright
+  drawPhone(imgs[2], 560, 60, pw + 20, ph + 30, 0);
+  // phone 3 — right, slight tilt
+  drawPhone(imgs[1], 710, 90, pw, ph, 5);
+
+  // decorative ring
+  ctx.beginPath();
+  ctx.arc(640, 260, 200, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(124,58,237,0.07)';
+  ctx.lineWidth = 40;
+  ctx.stroke();
+
+  // store badge hint
+  ctx.font = '11px sans-serif';
+  ctx.fillStyle = 'rgba(148,163,184,0.5)';
+  ctx.textAlign = 'center';
+  ctx.fillText('Available on Google Play', 512, 488);
+  ctx.textAlign = 'left';
+}
+
+draw();
+
+function exportPNG() {
+  const a = document.createElement('a');
+  a.download = 'feature-graphic-1024x500.png';
+  a.href = canvas.toDataURL('image/png');
+  a.click();
+}
+</script>
+</body>
+</html>

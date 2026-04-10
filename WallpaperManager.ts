@@ -27,6 +27,19 @@ export async function scheduleDailyWallpaper(enabled: boolean, interval: Wallpap
   return WallpaperModule.scheduleDailyWallpaper(enabled, interval);
 }
 
+/** 檢查是否已豁免電池優化 */
+export async function isBatteryOptimizationIgnored(): Promise<boolean> {
+  if (Platform.OS !== 'android') return true;
+  if (!NativeModules.WallpaperModule) return true;
+  return NativeModules.WallpaperModule.isBatteryOptimizationIgnored();
+}
+
+/** 請求豁免電池優化（會彈出系統對話框）；回傳 true 代表已豁免 */
+export async function requestBatteryOptimizationExemption(): Promise<boolean> {
+  checkModule();
+  return WallpaperModule.requestBatteryOptimizationExemption();
+}
+
 /** 立即觸發一次 Worker（測試用） */
 export async function testWorkerNow(): Promise<void> {
   checkModule();

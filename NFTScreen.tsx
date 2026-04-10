@@ -20,6 +20,8 @@ import {
   scheduleDailyWallpaper,
   testWorkerNow,
   getWorkerDebugStatus,
+  isBatteryOptimizationIgnored,
+  requestBatteryOptimizationExemption,
   type WorkerDebugStatus,
   type WallpaperInterval,
 } from './WallpaperManager';
@@ -492,11 +494,29 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
     );
   }, [loadPage]);
 
-  // 每次 address 或 interval 變更都重新排程 Worker
+  // 每次 address 或 interval 變更都重新排程 Worker，並確認電池優化豁免
   useEffect(() => {
     saveWalletSettings(address, ALCHEMY_API_KEY)
       .then(() => scheduleDailyWallpaper(true, interval))
-      .then(() => console.log('[AutoWallpaper] WorkManager 已排程, interval=', interval))
+      .then(() => {
+        console.log('[AutoWallpaper] WorkManager 已排程, interval=', interval);
+        return isBatteryOptimizationIgnored();
+      })
+      .then(ignored => {
+        if (!ignored) {
+          Alert.alert(
+            t('battery_opt_title'),
+            t('battery_opt_msg'),
+            [
+              {
+                text: t('battery_opt_allow'),
+                onPress: () => requestBatteryOptimizationExemption().catch(() => {}),
+              },
+              { text: t('cancel'), style: 'cancel' },
+            ]
+          );
+        }
+      })
       .catch(e => console.warn('[AutoWallpaper] 排程失敗:', e?.message));
   }, [address, interval]);
 

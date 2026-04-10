@@ -1,7 +1,11 @@
 package com.nftwallpaper.app
 
 import android.app.WallpaperManager
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import com.facebook.react.bridge.*
 import java.io.FileInputStream
 
@@ -61,6 +65,36 @@ class WallpaperModule(reactContext: ReactApplicationContext) :
             promise.resolve(null)
         } catch (e: Exception) {
             promise.reject("ERR_TEST_WORKER", e.message ?: "Unknown error", e)
+        }
+    }
+
+    @ReactMethod
+    fun isBatteryOptimizationIgnored(promise: Promise) {
+        try {
+            val pm = reactApplicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+            promise.resolve(pm.isIgnoringBatteryOptimizations(reactApplicationContext.packageName))
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun requestBatteryOptimizationExemption(promise: Promise) {
+        try {
+            val pm = reactApplicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+            val pkg = reactApplicationContext.packageName
+            if (!pm.isIgnoringBatteryOptimizations(pkg)) {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$pkg")
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                reactApplicationContext.startActivity(intent)
+                promise.resolve(false) // dialog shown, not yet granted
+            } else {
+                promise.resolve(true) // already exempted
+            }
+        } catch (e: Exception) {
+            promise.reject("ERR_BATTERY", e.message ?: "Unknown error", e)
         }
     }
 

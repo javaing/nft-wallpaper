@@ -65,6 +65,9 @@ export default {
   interval_label: '更新頻率',
   interval_15min: '每 15 分鐘',
   interval_daily: '每日',
+  battery_opt_title: '建議關閉電池優化',
+  battery_opt_msg: '為確保桌布能在背景自動更換，請允許此 App 不受電池優化限制。',
+  battery_opt_allow: '立即設定',
 
   // Wallet chips
   add_wallet: '+ 新增錢包',

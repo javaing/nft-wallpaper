@@ -73,6 +73,7 @@ export default {
   add_wallet: '+ ウォレット追加',
   remove_wallet: 'ウォレットを削除',
   remove_wallet_confirm: 'このウォレットを削除しますか？',
+  wallet_row_hint: 'タップで切替。長押しまたは右の ⋮ でこのアドレスを削除できます。',
   remove: '削除',
   eth_chain: 'ETH',
   tezos_chain: 'XTZ',

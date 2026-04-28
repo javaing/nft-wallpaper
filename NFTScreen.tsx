@@ -560,8 +560,20 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
     }
   }, [selectedNFT, address]);
 
+  const promptRemoveWallet = useCallback(
+    (addr: string) => {
+      Alert.alert(t('remove_wallet'), `${t('remove_wallet_confirm')}\n\n${addr}`, [
+        { text: t('cancel'), style: 'cancel' },
+        {
+          text: t('remove'),
+          style: 'destructive',
+          onPress: () => onRemoveWallet?.(addr),
+        },
+      ]);
+    },
+    [t, onRemoveWallet]
+  );
 
-  const shortenAddress = (addr: string) => `${addr.slice(0, 6)}...${addr.slice(-4)}`;
   const today = new Date().toDateString();
   const wallpaperSetToday =
     currentWallpaper?.setDate === today && currentWallpaper.address === address;
@@ -578,45 +590,60 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
       </View>
 
       {/* Wallet Chips + Gear */}
-      <View style={styles.walletRow}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.walletChips} style={{ flex: 1 }}>
-          {wallets.map(addr => {
-            const chain = detectChain(addr);
-            const isSelected = addr === selectedAddress;
-            return (
-              <TouchableOpacity
-                key={addr}
-                style={[styles.walletChip, isSelected && styles.walletChipSelected,
-                  chain === 'tezos' && styles.walletChipTezos,
-                  isSelected && chain === 'tezos' && styles.walletChipTezosSelected]}
-                onPress={() => setSelectedAddress(addr)}
-                onLongPress={() => Alert.alert(
-                  '錢包選項',
-                  addr,
-                  [
-                    { text: '移除此錢包', style: 'destructive', onPress: () => onRemoveWallet?.(addr) },
-                    { text: '取消', style: 'cancel' },
-                  ]
-                )}
-              >
-                <Text style={[styles.walletChipLabel, isSelected && styles.walletChipLabelSelected]}>
-                  {chain === 'tezos' ? 'XTZ' : 'ETH'} {shortAddr(addr)}
-                </Text>
+      <View style={styles.walletSection}>
+        <View style={styles.walletRow}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.walletChips} style={{ flex: 1 }}>
+            {wallets.map(addr => {
+              const chain = detectChain(addr);
+              const isSelected = addr === selectedAddress;
+              return (
+                <View
+                  key={addr}
+                  style={[
+                    styles.walletChip,
+                    isSelected && styles.walletChipSelected,
+                    chain === 'tezos' && styles.walletChipTezos,
+                    isSelected && chain === 'tezos' && styles.walletChipTezosSelected,
+                  ]}
+                >
+                  <TouchableOpacity
+                    style={styles.walletChipMain}
+                    onPress={() => setSelectedAddress(addr)}
+                    onLongPress={() => promptRemoveWallet(addr)}
+                  >
+                    <Text
+                      style={[styles.walletChipLabel, isSelected && styles.walletChipLabelSelected]}
+                      numberOfLines={1}
+                    >
+                      {chain === 'tezos' ? 'XTZ' : 'ETH'} {shortAddr(addr)}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.walletChipMenuBtn}
+                    onPress={() => promptRemoveWallet(addr)}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('remove_wallet')}
+                    hitSlop={{ top: 10, bottom: 10, left: 6, right: 10 }}
+                  >
+                    <Text style={styles.walletChipMenuIcon}>⋮</Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
+            {wallets.length < 10 && (
+              <TouchableOpacity style={styles.walletChipAdd} onPress={onAddWallet}>
+                <Text style={styles.walletChipAddText}>＋</Text>
               </TouchableOpacity>
-            );
-          })}
-          {wallets.length < 10 && (
-            <TouchableOpacity style={styles.walletChipAdd} onPress={onAddWallet}>
-              <Text style={styles.walletChipAddText}>＋</Text>
-            </TouchableOpacity>
-          )}
-        </ScrollView>
-        <TouchableOpacity
-          style={[styles.gearBtn, showIntervalOptions && styles.gearBtnActive]}
-          onPress={() => setShowIntervalOptions(v => !v)}
-        >
-          <Text style={styles.gearIcon}>⚙</Text>
-        </TouchableOpacity>
+            )}
+          </ScrollView>
+          <TouchableOpacity
+            style={[styles.gearBtn, showIntervalOptions && styles.gearBtnActive]}
+            onPress={() => setShowIntervalOptions(v => !v)}
+          >
+            <Text style={styles.gearIcon}>⚙</Text>
+          </TouchableOpacity>
+        </View>
+        <Text style={styles.walletRowHint}>{t('wallet_row_hint')}</Text>
       </View>
 
       {/* 更新頻率選項（點齒輪展開） */}
@@ -704,11 +731,12 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
           <Text style={styles.emptySubtext}>{t('empty_nfts_sub')}</Text>
         </View>
       ) : (
-        <>
+        <View style={styles.listSection}>
           <FlatList
             data={nfts}
             keyExtractor={item => `${item.contractAddress}-${item.tokenId}`}
             numColumns={2}
+            style={styles.nftList}
             contentContainerStyle={styles.grid}
             columnWrapperStyle={styles.row}
             renderItem={({ item }) => (
@@ -762,7 +790,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
               <Text style={styles.pageBtnText}>{t('next_page')}</Text>
             </TouchableOpacity>
           </View>
-        </>
+        </View>
       )}
     </View>
   );
@@ -785,7 +813,16 @@ const styles = StyleSheet.create({
   backText: { color: '#a78bfa', fontSize: 16 },
   headerTitle: { color: '#fff', fontSize: 18, fontWeight: '700' },
   refreshBtn: { padding: 8 },
-  walletRow: { backgroundColor: '#111827', paddingVertical: 6, flexDirection: 'row', alignItems: 'center' },
+  walletSection: { backgroundColor: '#111827' },
+  walletRow: { paddingTop: 6, flexDirection: 'row', alignItems: 'center' },
+  walletRowHint: {
+    color: '#6b7280',
+    fontSize: 11,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    paddingTop: 2,
+    lineHeight: 15,
+  },
   gearBtn: {
     width: 36,
     height: 36,
@@ -796,15 +833,29 @@ const styles = StyleSheet.create({
   },
   gearBtnActive: { backgroundColor: '#1e293b' },
   gearIcon: { fontSize: 18, color: '#6b7280' },
-  walletChips: { paddingHorizontal: 12, gap: 8, flexDirection: 'row', alignItems: 'center' },
+  walletChips: {
+    paddingHorizontal: 12,
+    gap: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexGrow: 0,
+  },
   walletChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexGrow: 0,
+    flexShrink: 0,
+    alignSelf: 'flex-start',
     borderWidth: 1,
     borderColor: '#374151',
     borderRadius: 20,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingLeft: 4,
+    paddingRight: 2,
     backgroundColor: '#1f2937',
   },
+  walletChipMain: { paddingVertical: 5, paddingLeft: 8, paddingRight: 4 },
+  walletChipMenuBtn: { paddingVertical: 5, paddingHorizontal: 6, justifyContent: 'center' },
+  walletChipMenuIcon: { color: '#9ca3af', fontSize: 16, fontWeight: '700', lineHeight: 18 },
   walletChipSelected: { borderColor: '#6366f1', backgroundColor: '#1e1b4b' },
   walletChipTezos: { borderColor: '#0d9488' },
   walletChipTezosSelected: { borderColor: '#0d9488', backgroundColor: '#042f2e' },
@@ -904,6 +955,8 @@ const styles = StyleSheet.create({
   debugText: { color: '#d1d5db', fontSize: 11 },
 
   // Grid
+  listSection: { flex: 1 },
+  nftList: { flex: 1 },
   count: { color: '#6b7280', fontSize: 12, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 },
   grid: { paddingHorizontal: 16, paddingBottom: 16 },
   row: { justifyContent: 'space-between' },

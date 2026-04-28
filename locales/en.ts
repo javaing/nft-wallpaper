@@ -73,6 +73,7 @@ export default {
   add_wallet: '+ Add Wallet',
   remove_wallet: 'Remove Wallet',
   remove_wallet_confirm: 'Remove this wallet?',
+  wallet_row_hint: 'Tap to switch wallet. Long-press or tap ⋮ to remove this address.',
   remove: 'Remove',
   eth_chain: 'ETH',
   tezos_chain: 'XTZ',

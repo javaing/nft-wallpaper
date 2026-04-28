@@ -73,6 +73,7 @@ export default {
   add_wallet: '+ 新增錢包',
   remove_wallet: '移除此錢包',
   remove_wallet_confirm: '確定要移除此錢包嗎？',
+  wallet_row_hint: '點一下切換錢包；長按或點右側 ⋮ 可移除此地址',
   remove: '移除',
   eth_chain: 'ETH',
   tezos_chain: 'XTZ',

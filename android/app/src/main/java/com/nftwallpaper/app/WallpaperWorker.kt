@@ -10,6 +10,7 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.TimeUnit
+import kotlin.random.Random
 
 class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
     Worker(context, workerParams) {
@@ -85,10 +86,17 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
             return Result.failure()
         }
 
-        var index = prefs.getInt(KEY_INDEX, 0)
-        if (index >= allNfts.size) index = 0
+        val savedIndex = prefs.getInt(KEY_INDEX, -1)
+        val index = if (allNfts.size <= 1) {
+            0
+        } else {
+            var candidate = Random.nextInt(allNfts.size)
+            if (candidate == savedIndex) {
+                candidate = (candidate + 1 + Random.nextInt(allNfts.size - 1)) % allNfts.size
+            }
+            candidate
+        }
         val imageUrl = allNfts[index]
-        val nextIndex = (index + 1) % allNfts.size
 
         return try {
             val file = downloadImage(imageUrl)
@@ -97,7 +105,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
             }
             file.delete()
             prefs.edit()
-                .putInt(KEY_INDEX, nextIndex)
+                .putInt(KEY_INDEX, index)
                 .putLong(KEY_LAST_RUN_AT, System.currentTimeMillis())
                 .putString(KEY_LAST_RESULT, "success")
                 .putString(KEY_LAST_MESSAGE, "設定 NFT #$index / ${allNfts.size}")
@@ -113,20 +121,36 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
 
     private fun fetchEthereumNfts(address: String, apiKey: String, out: MutableList<String>) {
         try {
-            val url = "https://eth-mainnet.g.alchemy.com/nft/v2/$apiKey/getNFTs?owner=$address&withMetadata=true&pageSize=100"
-            val json = httpGet(url) ?: return
-            val obj = JSONObject(json)
-            val nfts = obj.optJSONArray("ownedNfts") ?: return
-            for (i in 0 until nfts.length()) {
-                val nft = nfts.getJSONObject(i)
-                val mediaArr = nft.optJSONArray("media")
-                val imageUrl = mediaArr?.optJSONObject(0)?.optString("gateway", "")
-                    ?: nft.optJSONObject("metadata")?.optString("image", "")
-                    ?: ""
-                val resolved = resolveIpfs(imageUrl)
-                if (resolved.startsWith("http://") || resolved.startsWith("https://")) {
-                    out.add(resolved)
+            var pageKey: String? = null
+            var page = 0
+            val maxPages = 25
+
+            while (page < maxPages) {
+                val url = buildString {
+                    append("https://eth-mainnet.g.alchemy.com/nft/v2/$apiKey/getNFTs?owner=$address&withMetadata=true&pageSize=100")
+                    if (!pageKey.isNullOrBlank()) {
+                        append("&pageKey=")
+                        append(pageKey)
+                    }
                 }
+                val json = httpGet(url) ?: break
+                val obj = JSONObject(json)
+                val nfts = obj.optJSONArray("ownedNfts") ?: break
+                for (i in 0 until nfts.length()) {
+                    val nft = nfts.getJSONObject(i)
+                    val mediaArr = nft.optJSONArray("media")
+                    val imageUrl = mediaArr?.optJSONObject(0)?.optString("gateway", "")
+                        ?: nft.optJSONObject("metadata")?.optString("image", "")
+                        ?: ""
+                    val resolved = resolveIpfs(imageUrl)
+                    if (resolved.startsWith("http://") || resolved.startsWith("https://")) {
+                        out.add(resolved)
+                    }
+                }
+                val nextPageKey = obj.optString("pageKey", "")
+                if (nextPageKey.isBlank()) break
+                pageKey = nextPageKey
+                page++
             }
             Log.d("WallpaperWorker", "Ethereum NFTs fetched: ${out.size} from $address")
         } catch (e: Exception) {
@@ -136,21 +160,32 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
 
     private fun fetchTezosNfts(address: String, out: MutableList<String>) {
         try {
-            val url = "https://api.tzkt.io/v1/tokens/balances?account=$address&balance.gt=0&limit=100&select=token"
-            val json = httpGet(url) ?: return
-            val arr = JSONArray(json)
-            for (i in 0 until arr.length()) {
-                val tokenObj = arr.optJSONObject(i)?.optJSONObject("token") ?: continue
-                val metadata = tokenObj.optJSONObject("metadata") ?: continue
-                val displayUri = metadata.optString("displayUri", "")
-                val artifactUri = metadata.optString("artifactUri", "")
-                val thumbnailUri = metadata.optString("thumbnailUri", "")
-                val raw = listOf(displayUri, artifactUri, thumbnailUri)
-                    .firstOrNull { it.isNotBlank() } ?: continue
-                val resolved = resolveIpfs(raw)
-                if (resolved.startsWith("http://") || resolved.startsWith("https://")) {
-                    out.add(resolved)
+            val pageSize = 100
+            var offset = 0
+            var page = 0
+            val maxPages = 25
+
+            while (page < maxPages) {
+                val url =
+                    "https://api.tzkt.io/v1/tokens/balances?account=$address&balance.gt=0&limit=$pageSize&offset=$offset&select=token"
+                val json = httpGet(url) ?: break
+                val arr = JSONArray(json)
+                for (i in 0 until arr.length()) {
+                    val tokenObj = arr.optJSONObject(i)?.optJSONObject("token") ?: continue
+                    val metadata = tokenObj.optJSONObject("metadata") ?: continue
+                    val displayUri = metadata.optString("displayUri", "")
+                    val artifactUri = metadata.optString("artifactUri", "")
+                    val thumbnailUri = metadata.optString("thumbnailUri", "")
+                    val raw = listOf(displayUri, artifactUri, thumbnailUri)
+                        .firstOrNull { it.isNotBlank() } ?: continue
+                    val resolved = resolveIpfs(raw)
+                    if (resolved.startsWith("http://") || resolved.startsWith("https://")) {
+                        out.add(resolved)
+                    }
                 }
+                if (arr.length() < pageSize) break
+                offset += pageSize
+                page++
             }
             Log.d("WallpaperWorker", "Tezos NFTs fetched: from $address")
         } catch (e: Exception) {

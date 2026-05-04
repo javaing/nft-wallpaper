@@ -243,6 +243,25 @@ async function fetchEthPage(
   };
 }
 
+async function fetchAllNftsForAuto(address: string): Promise<NFTItem[]> {
+  const chain = detectChain(address);
+  if (!chain) return [];
+
+  const items: NFTItem[] = [];
+  let pageKey: string | undefined = undefined;
+  const MAX_PAGES = 25;
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const result =
+      chain === 'tezos' ? await fetchTezosPage(address, pageKey) : await fetchEthPage(address, pageKey);
+    items.push(...result.items);
+    if (!result.nextPageKey) break;
+    pageKey = result.nextPageKey;
+  }
+
+  return items;
+}
+
 async function setAsWallpaper(nft: NFTItem, address: string, preloadedUri?: string): Promise<void> {
   // 桌布優先用高畫質 wallpaperUrl，fallback 到 imageUrl
   const targetUrl = nft.wallpaperUrl || nft.imageUrl;
@@ -410,7 +429,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
 
   // 自動換桌布：NFT 載入完成或週期檢查時觸發
   useEffect(() => {
-    if (!autoEnabled || loading || nfts.length === 0) return;
+    if (!autoEnabled || loading) return;
     const now = Date.now();
     AsyncStorage.multiGet([STORAGE_KEY_WALLPAPER, STORAGE_KEY_AUTO_INDEX, STORAGE_KEY_AUTO_LAST_TS]).then(
       async ([[, wallRaw], [, idxRaw], [, lastTsRaw]]) => {
@@ -418,15 +437,31 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
         const lastTs = lastTsRaw ? parseInt(lastTsRaw, 10) : 0;
         if (!Number.isNaN(lastTs) && lastTs > 0 && now - lastTs < INTERVAL_MS[interval]) return;
 
-        const prevIdx = idxRaw ? parseInt(idxRaw, 10) : 0;
-        const nextIdx = (prevIdx + 1) % nfts.length;
-        const nft = nfts[nextIdx];
-        if (!nft?.imageUrl) return;
+        const autoNfts = await fetchAllNftsForAuto(address);
+        if (autoNfts.length === 0) {
+          console.warn('[AutoWallpaper] 找不到可用 NFT（auto list empty）');
+          return;
+        }
+
+        const parsedIdx = idxRaw ? parseInt(idxRaw, 10) : -1;
+        const prevIdx = Number.isNaN(parsedIdx) ? -1 : parsedIdx;
+        const nextIdx = (() => {
+          if (autoNfts.length <= 1) return 0;
+          let candidate = Math.floor(Math.random() * autoNfts.length);
+          if (candidate === prevIdx) {
+            candidate =
+              (candidate + 1 + Math.floor(Math.random() * (autoNfts.length - 1))) % autoNfts.length;
+          }
+          return candidate;
+        })();
+        const nft = autoNfts[nextIdx];
+        const targetUrl = nft?.wallpaperUrl || nft?.imageUrl;
+        if (!targetUrl) return;
 
         console.log('[AutoWallpaper] 自動換桌布:', nft.name, '(index', nextIdx, ')');
         try {
           const dest = `${FileSystem.cacheDirectory}nft_wallpaper_auto.jpg`;
-          const { status } = await FileSystem.downloadAsync(nft.imageUrl, dest, { headers: DOWNLOAD_HEADERS });
+          const { status } = await FileSystem.downloadAsync(targetUrl, dest, { headers: DOWNLOAD_HEADERS });
           if (status !== 200) throw new Error('下載失敗');
           await setWallpaperDirect(dest);
           const record: WallpaperRecord = { nft, setDate: new Date(now).toDateString(), address };
@@ -442,7 +477,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
         }
       }
     );
-  }, [autoEnabled, loading, nfts, address, autoTick, interval]);
+  }, [autoEnabled, loading, address, autoTick, interval]);
 
   const loadPage = useCallback(
     async (pageKey: string | undefined) => {

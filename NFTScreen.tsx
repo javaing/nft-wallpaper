@@ -33,6 +33,8 @@ const STORAGE_KEY_WALLPAPER = 'nft_wallpaper_current';
 const STORAGE_KEY_AUTO_INDEX = 'auto_wallpaper_index';
 const STORAGE_KEY_AUTO_LAST_TS = 'auto_wallpaper_last_ts';
 const STORAGE_KEY_INTERVAL = 'wallpaper_interval';
+const STORAGE_KEY_LIST_PREFIX = 'nft_list_v1_';
+const NFT_LIST_TTL_MS = 10 * 60 * 1000; // 10 分鐘內視為新鮮，免再打 API
 const INTERVAL_MS: Record<WallpaperInterval, number> = {
   '15min': 15 * 60 * 1000,
   'daily': 24 * 60 * 60 * 1000,
@@ -54,6 +56,47 @@ export type NFTItem = {
   contractAddress: string;
   chain: Chain;
 };
+
+type CachedPage = {
+  items: NFTItem[];
+  nextPageKey?: string;
+  totalCount?: number;
+  ts: number;
+};
+
+const memoryCache = new Map<string, CachedPage>();
+
+function cacheKey(address: string, pageKey?: string) {
+  return `${address}|${pageKey ?? '__first__'}`;
+}
+
+function storageKeyFor(address: string, pageKey?: string) {
+  return STORAGE_KEY_LIST_PREFIX + cacheKey(address, pageKey);
+}
+
+async function readCachedPage(address: string, pageKey?: string): Promise<CachedPage | null> {
+  const key = cacheKey(address, pageKey);
+  const mem = memoryCache.get(key);
+  if (mem) return mem;
+  try {
+    const raw = await AsyncStorage.getItem(storageKeyFor(address, pageKey));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as CachedPage;
+    memoryCache.set(key, parsed);
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCachedPage(address: string, pageKey: string | undefined, page: CachedPage) {
+  memoryCache.set(cacheKey(address, pageKey), page);
+  try {
+    await AsyncStorage.setItem(storageKeyFor(address, pageKey), JSON.stringify(page));
+  } catch {
+    // AsyncStorage 失敗不致命：記憶體層仍可用
+  }
+}
 
 function detectChain(address: string): Chain | null {
   if (/^0x[0-9a-fA-F]{40}$/i.test(address)) return 'ethereum';
@@ -480,17 +523,42 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
   }, [autoEnabled, loading, address, autoTick, interval]);
 
   const loadPage = useCallback(
-    async (pageKey: string | undefined) => {
-      setLoading(true);
+    async (pageKey: string | undefined, options?: { forceRefresh?: boolean }) => {
+      const force = options?.forceRefresh ?? false;
       setError(null);
       setSelectedNFT(null);
+
+      let showedCached = false;
+      if (!force) {
+        const cached = await readCachedPage(address, pageKey);
+        if (cached) {
+          setNfts(cached.items);
+          setNextPageKey(cached.nextPageKey);
+          if (cached.totalCount) setTotalCount(cached.totalCount);
+          showedCached = true;
+          if (Date.now() - cached.ts < NFT_LIST_TTL_MS) {
+            setLoading(false);
+            return; // 新鮮 cache，跳過網路
+          }
+          // stale：先讓 UI 顯示舊資料，背景繼續 refresh
+        }
+      }
+
+      if (!showedCached) setLoading(true);
       try {
         const result = await fetchPage(address, pageKey);
         setNfts(result.items);
         setNextPageKey(result.nextPageKey);
         if (result.totalCount) setTotalCount(result.totalCount);
+        await writeCachedPage(address, pageKey, {
+          items: result.items,
+          nextPageKey: result.nextPageKey,
+          totalCount: result.totalCount,
+          ts: Date.now(),
+        });
       } catch (e: any) {
-        setError(e?.message ?? '載入失敗');
+        if (!showedCached) setError(e?.message ?? '載入失敗');
+        else console.warn('[NFTList] background refresh failed:', e?.message);
       } finally {
         setLoading(false);
       }
@@ -498,13 +566,13 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
     [address]
   );
 
-  // 重置到第一頁並重新拉取
+  // 重置到第一頁並重新拉取（按重新整理鈕：跳過 cache）
   const refreshList = useCallback(() => {
     setPageHistory([undefined]);
     setCurrentPage(1);
     setNextPageKey(undefined);
     setTotalCount(undefined);
-    loadPage(undefined);
+    loadPage(undefined, { forceRefresh: true });
   }, [loadPage]);
 
   // 切換錢包時重置並重新載入

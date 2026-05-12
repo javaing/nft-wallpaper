@@ -33,17 +33,25 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         const val KEY_CURRENT_RECORD_AT = "current_wallpaper_at"
 
         fun schedule(context: Context, interval: String = INTERVAL_DAILY) {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val currentInterval = prefs.getString(KEY_INTERVAL, null)
+            // 同 interval → KEEP，保留既有排程（避免重複呼叫 reset 已等待的 worker）
+            // 換 interval → UPDATE，必須替換新的週期
+            val policy = if (currentInterval == interval) {
+                ExistingPeriodicWorkPolicy.KEEP
+            } else {
+                ExistingPeriodicWorkPolicy.UPDATE
+            }
             val intervalAmount = if (interval == INTERVAL_15MIN) 15L else 1L
             val intervalUnit = if (interval == INTERVAL_15MIN) TimeUnit.MINUTES else TimeUnit.DAYS
-            // No network constraint: let the worker decide at runtime whether to skip
             val request = PeriodicWorkRequestBuilder<WallpaperWorker>(intervalAmount, intervalUnit)
                 .build()
             WorkManager.getInstance(context)
-                .enqueueUniquePeriodicWork(
-                    WORK_NAME,
-                    ExistingPeriodicWorkPolicy.UPDATE,
-                    request
-                )
+                .enqueueUniquePeriodicWork(WORK_NAME, policy, request)
+            if (currentInterval != interval) {
+                prefs.edit().putString(KEY_INTERVAL, interval).apply()
+            }
+            Log.d("WallpaperWorker", "schedule interval=$interval policy=$policy")
         }
 
         fun cancel(context: Context) {

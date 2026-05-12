@@ -499,7 +499,6 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
   }, [wallets]);
 
   const address = selectedAddress;
-  console.log('[NFTScreen] mount, address =', JSON.stringify(address));
   const [nfts, setNfts] = useState<NFTItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -517,6 +516,12 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
   // 開 App 時提示目前桌布 NFT（每次 App 啟動只顯示一次）
   const [wallpaperNotice, setWallpaperNotice] = useState<WallpaperRecord | null>(null);
   const wallpaperNoticeChecked = useRef(false);
+  // 排程去重：避免每次 render 都呼叫 WorkManager.enqueueUniquePeriodicWork 把 worker reset
+  const lastScheduledKey = useRef<string>('');
+  // 等 interval 從 AsyncStorage 載入後才開始排程（避免「daily → 15min」flip 排兩次）
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  // JS auto-wallpaper lock：防止平行多次觸發
+  const autoWallpaperBusy = useRef(false);
   const autoEnabled = true;
   const [interval, setIntervalPref] = useState<WallpaperInterval>('daily');
   const [showIntervalOptions, setShowIntervalOptions] = useState(false);
@@ -571,12 +576,21 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
   // 自動換桌布：NFT 載入完成或週期檢查時觸發
   useEffect(() => {
     if (!autoEnabled || loading) return;
+    // Lock: 避免同一 JS context 內多次平行觸發（mount 多次 / deps 連續變動）
+    if (autoWallpaperBusy.current) return;
+    autoWallpaperBusy.current = true;
+
     const now = Date.now();
     AsyncStorage.multiGet([STORAGE_KEY_WALLPAPER, STORAGE_KEY_AUTO_INDEX, STORAGE_KEY_AUTO_LAST_TS]).then(
       async ([[, wallRaw], [, idxRaw], [, lastTsRaw]]) => {
+      try {
         const wall: WallpaperRecord | null = wallRaw ? JSON.parse(wallRaw) : null;
         const lastTs = lastTsRaw ? parseInt(lastTsRaw, 10) : 0;
         if (!Number.isNaN(lastTs) && lastTs > 0 && now - lastTs < INTERVAL_MS[interval]) return;
+
+        // 立即 claim 時間戳：JS bundle 重啟時這條 lock 沒了，但 AUTO_LAST_TS 持久化
+        // 後續 effect / JS reload 讀到新 lastTs 就會 skip
+        await AsyncStorage.setItem(STORAGE_KEY_AUTO_LAST_TS, String(now));
 
         const autoNfts = await fetchAllNftsForAuto(address);
         if (autoNfts.length === 0) {
@@ -631,8 +645,14 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
         } catch (e: any) {
           console.warn('[AutoWallpaper] 失敗:', e?.message);
         }
+      } finally {
+        autoWallpaperBusy.current = false;
       }
-    );
+      }
+    ).catch(e => {
+      autoWallpaperBusy.current = false;
+      console.warn('[AutoWallpaper] multiGet 失敗:', e?.message);
+    });
   }, [autoEnabled, loading, address, autoTick, interval]);
 
   const loadPage = useCallback(
@@ -751,11 +771,20 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
           setIntervalPref(savedInterval);
         }
       } catch {}
+      // 一定要在 setIntervalPref 之後設，這樣排程 effect 第一次跑就拿到正確的 interval
+      setSettingsLoaded(true);
     })();
   }, [loadPage]);
 
   // 每次 address 或 interval 變更都重新排程 Worker，並確認電池優化豁免
   useEffect(() => {
+    // 等 AsyncStorage 載入完才排程，避免 'daily' (初始) → '15min' (storage) 排兩次造成 worker reset
+    if (!settingsLoaded) return;
+    // 同 address+interval 只排一次（即便 React 多次 render / StrictMode 雙 render）
+    const key = `${address}|${interval}`;
+    if (lastScheduledKey.current === key) return;
+    lastScheduledKey.current = key;
+
     saveWalletSettings(address, ALCHEMY_API_KEY)
       .then(() => scheduleDailyWallpaper(true, interval))
       .then(() => {
@@ -778,7 +807,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
         }
       })
       .catch(e => console.warn('[AutoWallpaper] 排程失敗:', e?.message));
-  }, [address, interval]);
+  }, [address, interval, settingsLoaded]);
 
   const goNextPage = useCallback(() => {
     if (!nextPageKey) return;

@@ -9,6 +9,8 @@ import {
   Alert,
   Dimensions,
   Platform,
+  Modal,
+  Linking,
 } from 'react-native';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Image } from 'expo-image';
@@ -22,6 +24,8 @@ import {
   getWorkerDebugStatus,
   isBatteryOptimizationIgnored,
   requestBatteryOptimizationExemption,
+  getCurrentWallpaper as getNativeCurrentWallpaper,
+  recordCurrentWallpaper as recordNativeWallpaper,
   type WorkerDebugStatus,
   type WallpaperInterval,
 } from './WallpaperManager';
@@ -34,7 +38,9 @@ const STORAGE_KEY_AUTO_INDEX = 'auto_wallpaper_index';
 const STORAGE_KEY_AUTO_LAST_TS = 'auto_wallpaper_last_ts';
 const STORAGE_KEY_INTERVAL = 'wallpaper_interval';
 const STORAGE_KEY_LIST_PREFIX = 'nft_list_v1_';
+const STORAGE_KEY_AUTO_LIST_PREFIX = 'nft_auto_list_v1_';
 const NFT_LIST_TTL_MS = 10 * 60 * 1000; // 10 分鐘內視為新鮮，免再打 API
+const AUTO_LIST_TTL_MS = 60 * 60 * 1000; // 全部 NFT 清單變動慢，1 小時 TTL
 const INTERVAL_MS: Record<WallpaperInterval, number> = {
   '15min': 15 * 60 * 1000,
   'daily': 24 * 60 * 60 * 1000,
@@ -98,6 +104,49 @@ async function writeCachedPage(address: string, pageKey: string | undefined, pag
   }
 }
 
+// ── 全部 NFT 清單 cache（auto-wallpaper 用）─────────────────────────────────
+type CachedAutoList = { items: NFTItem[]; ts: number };
+const autoListMemoryCache = new Map<string, CachedAutoList>();
+
+function autoListStorageKey(address: string) {
+  return STORAGE_KEY_AUTO_LIST_PREFIX + address;
+}
+
+async function readCachedAutoList(address: string): Promise<CachedAutoList | null> {
+  const mem = autoListMemoryCache.get(address);
+  if (mem) return mem;
+  try {
+    const raw = await AsyncStorage.getItem(autoListStorageKey(address));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as CachedAutoList;
+    autoListMemoryCache.set(address, parsed);
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCachedAutoList(address: string, list: CachedAutoList) {
+  autoListMemoryCache.set(address, list);
+  try {
+    await AsyncStorage.setItem(autoListStorageKey(address), JSON.stringify(list));
+  } catch {
+    // 略：記憶體層仍可用
+  }
+}
+
+function clearAutoListCache(address: string) {
+  autoListMemoryCache.delete(address);
+  AsyncStorage.removeItem(autoListStorageKey(address)).catch(() => {});
+}
+
+function clearPageCacheFor(address: string) {
+  for (const key of Array.from(memoryCache.keys())) {
+    if (key.startsWith(`${address}|`)) memoryCache.delete(key);
+  }
+  // AsyncStorage 中的 page cache 不主動清，下次 write 會覆蓋；force fetch 會直接 bypass
+}
+
 function detectChain(address: string): Chain | null {
   if (/^0x[0-9a-fA-F]{40}$/i.test(address)) return 'ethereum';
   if (/^tz[123][1-9A-HJ-NP-Za-km-z]{33}$/.test(address)) return 'tezos';
@@ -115,6 +164,18 @@ function resolveUrl(url: string | null | undefined): string | null {
   if (url.startsWith('ipfs://')) return `https://ipfs.io/ipfs/${url.slice(7)}`;
   if (url.startsWith('ar://')) return `https://arweave.net/${url.slice(5)}`;
   return url;
+}
+
+// 產生 NFT 詳情頁外部連結
+function buildAssetUrl(nft: NFTItem): string | null {
+  if (!nft?.contractAddress || !nft?.tokenId) return null;
+  if (nft.chain === 'ethereum') {
+    return `https://opensea.io/assets/ethereum/${nft.contractAddress}/${nft.tokenId}`;
+  }
+  if (nft.chain === 'tezos') {
+    return `https://objkt.com/asset/${nft.contractAddress}/${nft.tokenId}`;
+  }
+  return null;
 }
 
 const DOWNLOAD_HEADERS = {
@@ -286,9 +347,21 @@ async function fetchEthPage(
   };
 }
 
-async function fetchAllNftsForAuto(address: string): Promise<NFTItem[]> {
+async function fetchAllNftsForAuto(
+  address: string,
+  options?: { forceRefresh?: boolean }
+): Promise<NFTItem[]> {
   const chain = detectChain(address);
   if (!chain) return [];
+
+  const force = options?.forceRefresh ?? false;
+  if (!force) {
+    const cached = await readCachedAutoList(address);
+    if (cached && Date.now() - cached.ts < AUTO_LIST_TTL_MS) {
+      return cached.items;
+    }
+    // stale 或無 cache：往下走網路抓
+  }
 
   const items: NFTItem[] = [];
   let pageKey: string | undefined = undefined;
@@ -302,6 +375,10 @@ async function fetchAllNftsForAuto(address: string): Promise<NFTItem[]> {
     pageKey = result.nextPageKey;
   }
 
+  // 抓失敗（空陣列）不寫 cache，避免把空清單卡進來
+  if (items.length > 0) {
+    await writeCachedAutoList(address, { items, ts: Date.now() });
+  }
   return items;
 }
 
@@ -330,6 +407,24 @@ async function setAsWallpaper(nft: NFTItem, address: string, preloadedUri?: stri
     address,
   };
   await AsyncStorage.setItem(STORAGE_KEY_WALLPAPER, JSON.stringify(record));
+  // 同步寫到 native SharedPreferences，讓 dialog 與 native worker 共享同一份狀態
+  try {
+    await recordNativeWallpaper({
+      setDate: record.setDate,
+      address: record.address,
+      nft: {
+        chain: nft.chain,
+        contractAddress: nft.contractAddress,
+        tokenId: nft.tokenId,
+        name: nft.name,
+        collectionName: nft.collectionName,
+        imageUrl: nft.imageUrl ?? '',
+        wallpaperUrl: nft.wallpaperUrl ?? nft.imageUrl ?? '',
+      },
+    });
+  } catch {
+    // 寫不到 native 不影響主流程（iOS 或 native module 載入失敗）
+  }
 }
 
 // ─── NFT Card ────────────────────────────────────────────────────────────────
@@ -419,6 +514,9 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
   const [selectedNFT, setSelectedNFT] = useState<NFTItem | null>(null);
   const [settingWallpaper, setSettingWallpaper] = useState(false);
   const [currentWallpaper, setCurrentWallpaper] = useState<WallpaperRecord | null>(null);
+  // 開 App 時提示目前桌布 NFT（每次 App 啟動只顯示一次）
+  const [wallpaperNotice, setWallpaperNotice] = useState<WallpaperRecord | null>(null);
+  const wallpaperNoticeChecked = useRef(false);
   const autoEnabled = true;
   const [interval, setIntervalPref] = useState<WallpaperInterval>('daily');
   const [showIntervalOptions, setShowIntervalOptions] = useState(false);
@@ -513,6 +611,21 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
             [STORAGE_KEY_AUTO_INDEX, String(nextIdx)],
             [STORAGE_KEY_AUTO_LAST_TS, String(now)],
           ]);
+          try {
+            await recordNativeWallpaper({
+              setDate: record.setDate,
+              address: record.address,
+              nft: {
+                chain: nft.chain,
+                contractAddress: nft.contractAddress,
+                tokenId: nft.tokenId,
+                name: nft.name,
+                collectionName: nft.collectionName,
+                imageUrl: nft.imageUrl ?? '',
+                wallpaperUrl: nft.wallpaperUrl ?? nft.imageUrl ?? '',
+              },
+            });
+          } catch {}
           setCurrentWallpaper(record);
           console.log('[AutoWallpaper] 完成（15 分鐘排程）');
         } catch (e: any) {
@@ -566,14 +679,16 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
     [address]
   );
 
-  // 重置到第一頁並重新拉取（按重新整理鈕：跳過 cache）
+  // 重置到第一頁並重新拉取（按重新整理鈕：清掉這個 address 的所有 cache）
   const refreshList = useCallback(() => {
     setPageHistory([undefined]);
     setCurrentPage(1);
     setNextPageKey(undefined);
     setTotalCount(undefined);
+    clearPageCacheFor(address);
+    clearAutoListCache(address);
     loadPage(undefined, { forceRefresh: true });
-  }, [loadPage]);
+  }, [loadPage, address]);
 
   // 切換錢包時重置並重新載入
   useEffect(() => {
@@ -587,14 +702,56 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
   // 首次載入 + 讀取設定，自動模式永遠啟用
   useEffect(() => {
     loadPage(undefined);
-    AsyncStorage.multiGet([STORAGE_KEY_WALLPAPER, STORAGE_KEY_INTERVAL]).then(
-      ([[, wallRaw], [, savedInterval]]) => {
-        if (wallRaw) setCurrentWallpaper(JSON.parse(wallRaw));
+
+    // Native SharedPreferences 為唯一真實來源（worker 與 JS 手動設定都會寫這裡）
+    // 失敗或回傳 null 才退回 AsyncStorage
+    (async () => {
+      let record: WallpaperRecord | null = null;
+      try {
+        const native = await getNativeCurrentWallpaper();
+        if (native?.nft?.contractAddress) {
+          record = {
+            nft: {
+              chain: (native.nft.chain || 'ethereum') as Chain,
+              contractAddress: native.nft.contractAddress,
+              tokenId: native.nft.tokenId,
+              name: native.nft.name,
+              collectionName: native.nft.collectionName,
+              imageUrl: native.nft.imageUrl || null,
+              wallpaperUrl: native.nft.wallpaperUrl || native.nft.imageUrl || null,
+            },
+            setDate: native.setDate || new Date().toDateString(),
+            address: native.address || '',
+          };
+          // 寫回 AsyncStorage，讓兩邊保持一致
+          await AsyncStorage.setItem(STORAGE_KEY_WALLPAPER, JSON.stringify(record));
+        }
+      } catch {
+        // native bridge 失敗，往下退回 AsyncStorage
+      }
+
+      if (!record) {
+        try {
+          const wallRaw = await AsyncStorage.getItem(STORAGE_KEY_WALLPAPER);
+          if (wallRaw) record = JSON.parse(wallRaw) as WallpaperRecord;
+        } catch {}
+      }
+
+      if (record) {
+        setCurrentWallpaper(record);
+        if (!wallpaperNoticeChecked.current && record.nft) {
+          setWallpaperNotice(record);
+        }
+      }
+      wallpaperNoticeChecked.current = true;
+
+      try {
+        const savedInterval = await AsyncStorage.getItem(STORAGE_KEY_INTERVAL);
         if (savedInterval === '15min' || savedInterval === 'daily') {
           setIntervalPref(savedInterval);
         }
-      }
-    );
+      } catch {}
+    })();
   }, [loadPage]);
 
   // 每次 address 或 interval 變更都重新排程 Worker，並確認電池優化豁免
@@ -682,6 +839,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
     currentWallpaper?.setDate === today && currentWallpaper.address === address;
 
   return (
+    <>
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
@@ -895,6 +1053,86 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
           </View>
         </View>
       )}
+    </View>
+
+    {/* 開 App 提示目前桌布 NFT */}
+    <Modal
+      visible={!!wallpaperNotice}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setWallpaperNotice(null)}
+    >
+      {wallpaperNotice && (
+        <WallpaperNoticeDialog
+          record={wallpaperNotice}
+          onClose={() => setWallpaperNotice(null)}
+        />
+      )}
+    </Modal>
+    </>
+  );
+}
+
+// ─── Wallpaper Notice Dialog ─────────────────────────────────────────────────
+
+function WallpaperNoticeDialog({
+  record,
+  onClose,
+}: {
+  record: WallpaperRecord;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const nft = record.nft;
+  const url = buildAssetUrl(nft);
+  const thumbnail = resolveUrl(nft.imageUrl);
+
+  const handleView = useCallback(async () => {
+    if (!url) {
+      onClose();
+      return;
+    }
+    try {
+      await Linking.openURL(url);
+    } catch {
+      // 開啟外部瀏覽器失敗就靜默關閉
+    }
+    onClose();
+  }, [url, onClose]);
+
+  return (
+    <View style={dialog.backdrop}>
+      <View style={dialog.card}>
+        <Text style={dialog.title}>{t('wallpaper_notice_title')}</Text>
+        {thumbnail ? (
+          <Image
+            source={{ uri: thumbnail }}
+            style={dialog.image}
+            contentFit="cover"
+            transition={200}
+          />
+        ) : (
+          <View style={[dialog.image, dialog.noImage]}>
+            <Text style={dialog.noImageText}>🖼️</Text>
+          </View>
+        )}
+        <Text style={dialog.name} numberOfLines={2}>{nft.name || `#${nft.tokenId}`}</Text>
+        {!!nft.collectionName && (
+          <Text style={dialog.collection} numberOfLines={1}>{nft.collectionName}</Text>
+        )}
+        <View style={dialog.actions}>
+          <TouchableOpacity style={[dialog.btn, dialog.btnSecondary]} onPress={onClose}>
+            <Text style={dialog.btnTextSecondary}>{t('wallpaper_notice_close')}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[dialog.btn, dialog.btnPrimary, !url && dialog.btnDisabled]}
+            onPress={handleView}
+            disabled={!url}
+          >
+            <Text style={dialog.btnTextPrimary}>{t('wallpaper_notice_view')}</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
     </View>
   );
 }
@@ -1136,4 +1374,78 @@ const styles = StyleSheet.create({
   emptyIcon: { fontSize: 48, marginBottom: 12 },
   emptyText: { color: '#e5e7eb', fontSize: 18, fontWeight: '600' },
   emptySubtext: { color: '#6b7280', fontSize: 13, marginTop: 6 },
+});
+
+const dialog = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  card: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: '#1a1a2e',
+    borderRadius: 20,
+    padding: 24,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.5,
+    shadowRadius: 16,
+    elevation: 12,
+  },
+  title: {
+    color: '#a78bfa',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+    marginBottom: 16,
+  },
+  image: {
+    width: 220,
+    height: 220,
+    borderRadius: 12,
+    backgroundColor: '#0f0f1a',
+    marginBottom: 16,
+  },
+  noImage: { alignItems: 'center', justifyContent: 'center' },
+  noImageText: { fontSize: 48 },
+  name: {
+    color: '#ffffff',
+    fontSize: 17,
+    fontWeight: '700',
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  collection: {
+    color: '#9ca3af',
+    fontSize: 13,
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  actions: {
+    flexDirection: 'row',
+    width: '100%',
+    gap: 12,
+  },
+  btn: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  btnSecondary: {
+    backgroundColor: '#374151',
+  },
+  btnPrimary: {
+    backgroundColor: '#7c3aed',
+  },
+  btnDisabled: { opacity: 0.4 },
+  btnTextSecondary: { color: '#e5e7eb', fontSize: 15, fontWeight: '600' },
+  btnTextPrimary: { color: '#ffffff', fontSize: 15, fontWeight: '700' },
 });

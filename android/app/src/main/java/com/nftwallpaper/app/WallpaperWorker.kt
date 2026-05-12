@@ -28,6 +28,9 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         const val KEY_INTERVAL = "worker_interval"
         const val INTERVAL_15MIN = "15min"
         const val INTERVAL_DAILY = "daily"
+        // 目前桌布的 NFT 完整資訊 (JSON) + 設定時間戳，供 JS 端 dialog 顯示
+        const val KEY_CURRENT_RECORD = "current_wallpaper_record"
+        const val KEY_CURRENT_RECORD_AT = "current_wallpaper_at"
 
         fun schedule(context: Context, interval: String = INTERVAL_DAILY) {
             val intervalAmount = if (interval == INTERVAL_15MIN) 15L else 1L
@@ -70,7 +73,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
             listOf(addressRaw)
         }
 
-        val allNfts = mutableListOf<String>()
+        val allNfts = mutableListOf<NftInfo>()
 
         for (address in addresses) {
             val addr = address.trim()
@@ -96,19 +99,29 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
             }
             candidate
         }
-        val imageUrl = allNfts[index]
+        val chosen = allNfts[index]
 
         return try {
-            val file = downloadImage(imageUrl)
+            val file = downloadImage(chosen.imageUrl)
             file.inputStream().use { stream ->
                 WallpaperManager.getInstance(applicationContext).setStream(stream)
             }
             file.delete()
+            val now = System.currentTimeMillis()
+            val recordJson = JSONObject().apply {
+                put("nft", chosen.toJson())
+                put("setDate", java.text.SimpleDateFormat("EEE MMM dd yyyy", java.util.Locale.US)
+                    .format(java.util.Date(now)))
+                put("address", chosen.ownerAddress)
+                put("source", "worker")
+            }
             prefs.edit()
                 .putInt(KEY_INDEX, index)
-                .putLong(KEY_LAST_RUN_AT, System.currentTimeMillis())
+                .putLong(KEY_LAST_RUN_AT, now)
                 .putString(KEY_LAST_RESULT, "success")
                 .putString(KEY_LAST_MESSAGE, "設定 NFT #$index / ${allNfts.size}")
+                .putString(KEY_CURRENT_RECORD, recordJson.toString())
+                .putLong(KEY_CURRENT_RECORD_AT, now)
                 .apply()
             Log.d("WallpaperWorker", "壁紙設定成功 index=$index total=${allNfts.size}")
             Result.success()
@@ -119,7 +132,28 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         }
     }
 
-    private fun fetchEthereumNfts(address: String, apiKey: String, out: MutableList<String>) {
+    // ─── Internal NFT data class ─────────────────────────────────────────────
+    private data class NftInfo(
+        val chain: String,
+        val contractAddress: String,
+        val tokenId: String,
+        val name: String,
+        val collectionName: String,
+        val imageUrl: String,
+        val ownerAddress: String,
+    ) {
+        fun toJson(): JSONObject = JSONObject().apply {
+            put("chain", chain)
+            put("contractAddress", contractAddress)
+            put("tokenId", tokenId)
+            put("name", name)
+            put("collectionName", collectionName)
+            put("imageUrl", imageUrl)
+            put("wallpaperUrl", imageUrl)
+        }
+    }
+
+    private fun fetchEthereumNfts(address: String, apiKey: String, out: MutableList<NftInfo>) {
         try {
             var pageKey: String? = null
             var page = 0
@@ -143,9 +177,28 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                         ?: nft.optJSONObject("metadata")?.optString("image", "")
                         ?: ""
                     val resolved = resolveIpfs(imageUrl)
-                    if (resolved.startsWith("http://") || resolved.startsWith("https://")) {
-                        out.add(resolved)
-                    }
+                    if (!resolved.startsWith("http://") && !resolved.startsWith("https://")) continue
+
+                    val contract = nft.optJSONObject("contract")?.optString("address", "") ?: ""
+                    val tokenIdHex = nft.optJSONObject("id")?.optString("tokenId", "") ?: ""
+                    val tokenId = hexToDecimalSafe(tokenIdHex)
+                    val nftName = nft.optJSONObject("metadata")?.optString("name", "")
+                        ?: nft.optString("title", "")
+                    val displayName = if (nftName.isNullOrBlank()) "#$tokenId" else nftName
+                    val collectionName = nft.optJSONObject("contractMetadata")?.optString("name", "")
+                        ?: ""
+
+                    out.add(
+                        NftInfo(
+                            chain = "ethereum",
+                            contractAddress = contract,
+                            tokenId = tokenId,
+                            name = displayName,
+                            collectionName = collectionName,
+                            imageUrl = resolved,
+                            ownerAddress = address,
+                        )
+                    )
                 }
                 val nextPageKey = obj.optString("pageKey", "")
                 if (nextPageKey.isBlank()) break
@@ -158,7 +211,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         }
     }
 
-    private fun fetchTezosNfts(address: String, out: MutableList<String>) {
+    private fun fetchTezosNfts(address: String, out: MutableList<NftInfo>) {
         try {
             val pageSize = 100
             var offset = 0
@@ -167,7 +220,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
 
             while (page < maxPages) {
                 val url =
-                    "https://api.tzkt.io/v1/tokens/balances?account=$address&balance.gt=0&limit=$pageSize&offset=$offset&select=token"
+                    "https://api.tzkt.io/v1/tokens/balances?account=$address&balance.gt=0&limit=$pageSize&offset=$offset&token.standard=fa2"
                 val json = httpGet(url) ?: break
                 val arr = JSONArray(json)
                 for (i in 0 until arr.length()) {
@@ -179,17 +232,44 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                     val raw = listOf(displayUri, artifactUri, thumbnailUri)
                         .firstOrNull { it.isNotBlank() } ?: continue
                     val resolved = resolveIpfs(raw)
-                    if (resolved.startsWith("http://") || resolved.startsWith("https://")) {
-                        out.add(resolved)
-                    }
+                    if (!resolved.startsWith("http://") && !resolved.startsWith("https://")) continue
+
+                    val contract = tokenObj.optJSONObject("contract")?.optString("address", "") ?: ""
+                    val tokenId = tokenObj.optString("tokenId", "")
+                    val nftName = metadata.optString("name", "")
+                    val displayName = if (nftName.isNullOrBlank()) "#$tokenId" else nftName
+                    val collectionAlias = tokenObj.optJSONObject("contract")?.optString("alias", "")
+                        ?: ""
+
+                    out.add(
+                        NftInfo(
+                            chain = "tezos",
+                            contractAddress = contract,
+                            tokenId = tokenId,
+                            name = displayName,
+                            collectionName = collectionAlias,
+                            imageUrl = resolved,
+                            ownerAddress = address,
+                        )
+                    )
                 }
                 if (arr.length() < pageSize) break
                 offset += pageSize
                 page++
             }
-            Log.d("WallpaperWorker", "Tezos NFTs fetched: from $address")
+            Log.d("WallpaperWorker", "Tezos NFTs fetched: ${out.size} from $address")
         } catch (e: Exception) {
             Log.e("WallpaperWorker", "fetchTezosNfts error: ${e.message}")
+        }
+    }
+
+    private fun hexToDecimalSafe(hex: String): String {
+        if (hex.isBlank()) return ""
+        return try {
+            val cleaned = if (hex.startsWith("0x")) hex.substring(2) else hex
+            java.math.BigInteger(cleaned, 16).toString(10)
+        } catch (e: Exception) {
+            hex
         }
     }
 

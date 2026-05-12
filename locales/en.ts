@@ -31,6 +31,11 @@ export default {
   my_nfts: 'My NFTs',
   back: '← Back',
 
+  // Wallpaper notice dialog (on app open)
+  wallpaper_notice_title: 'Current Wallpaper',
+  wallpaper_notice_close: 'Close',
+  wallpaper_notice_view: 'View Details',
+
   // Wallpaper bar
   wallpaper_select_hint: 'Select an NFT to set as wallpaper',
   wallpaper_selected: 'Selected: {{name}}',

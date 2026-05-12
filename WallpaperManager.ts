@@ -58,3 +58,46 @@ export async function getWorkerDebugStatus(): Promise<WorkerDebugStatus> {
   checkModule();
   return WallpaperModule.getWorkerDebugStatus();
 }
+
+/** Native SharedPreferences 真實的「目前桌布 NFT」記錄 */
+export type NativeCurrentWallpaper = {
+  setDate: string;
+  address: string;
+  source: 'worker' | 'manual' | '';
+  setAt: number; // millis
+  nft: {
+    chain: 'ethereum' | 'tezos' | '';
+    contractAddress: string;
+    tokenId: string;
+    name: string;
+    collectionName: string;
+    imageUrl: string;
+    wallpaperUrl: string;
+  };
+};
+
+/** 讀取目前實際生效的桌布 NFT（背景 Worker 或手動設定後寫入） */
+export async function getCurrentWallpaper(): Promise<NativeCurrentWallpaper | null> {
+  if (Platform.OS !== 'android') return null;
+  if (!NativeModules.WallpaperModule) return null;
+  return NativeModules.WallpaperModule.getCurrentWallpaper();
+}
+
+/** JS 端手動設定桌布後同步寫入 native，讓 Worker 與 JS 共享同一份狀態 */
+export async function recordCurrentWallpaper(record: {
+  setDate?: string;
+  address?: string;
+  nft: {
+    chain: 'ethereum' | 'tezos';
+    contractAddress: string;
+    tokenId: string;
+    name: string;
+    collectionName: string;
+    imageUrl: string;
+    wallpaperUrl?: string;
+  };
+}): Promise<void> {
+  if (Platform.OS !== 'android') return;
+  if (!NativeModules.WallpaperModule) return;
+  return NativeModules.WallpaperModule.recordCurrentWallpaper(record);
+}

@@ -31,6 +31,11 @@ export default {
   my_nfts: 'マイNFT',
   back: '← 戻る',
 
+  // Wallpaper notice dialog (アプリ起動時)
+  wallpaper_notice_title: '現在の壁紙',
+  wallpaper_notice_close: '閉じる',
+  wallpaper_notice_view: '詳細を見る',
+
   // Wallpaper bar
   wallpaper_select_hint: 'NFTを選択して壁紙に設定',
   wallpaper_selected: '選択中：{{name}}',

@@ -31,6 +31,11 @@ export default {
   my_nfts: '我的 NFT',
   back: '← 返回',
 
+  // Wallpaper notice dialog (打開 App 時)
+  wallpaper_notice_title: '目前桌布',
+  wallpaper_notice_close: '關閉',
+  wallpaper_notice_view: '查看詳情',
+
   // Wallpaper bar
   wallpaper_select_hint: '點選 NFT 後設為桌布',
   wallpaper_selected: '已選：{{name}}',

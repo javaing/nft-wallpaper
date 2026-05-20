@@ -585,8 +585,17 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
       async ([[, wallRaw], [, idxRaw], [, lastTsRaw]]) => {
       try {
         const wall: WallpaperRecord | null = wallRaw ? JSON.parse(wallRaw) : null;
-        const lastTs = lastTsRaw ? parseInt(lastTsRaw, 10) : 0;
-        if (!Number.isNaN(lastTs) && lastTs > 0 && now - lastTs < INTERVAL_MS[interval]) return;
+        let lastTs = lastTsRaw ? parseInt(lastTsRaw, 10) : 0;
+        if (Number.isNaN(lastTs)) lastTs = 0;
+
+        // 也比對 native 端的 setAt（worker 跑或 JS 手動寫都會更新）
+        // 避免「native worker 剛換過 → user 開 app → JS 再換一張」的雙跳
+        try {
+          const native = await getNativeCurrentWallpaper();
+          if (native?.setAt && native.setAt > lastTs) lastTs = native.setAt;
+        } catch {}
+
+        if (lastTs > 0 && now - lastTs < INTERVAL_MS[interval]) return;
 
         // 立即 claim 時間戳：JS bundle 重啟時這條 lock 沒了，但 AUTO_LAST_TS 持久化
         // 後續 effect / JS reload 讀到新 lastTs 就會 skip

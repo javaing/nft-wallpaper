@@ -8,6 +8,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import com.facebook.react.bridge.*
 import java.io.FileInputStream
+import org.json.JSONArray
 import org.json.JSONObject
 
 class WallpaperModule(reactContext: ReactApplicationContext) :
@@ -176,6 +177,87 @@ class WallpaperModule(reactContext: ReactApplicationContext) :
             promise.resolve(null)
         } catch (e: Exception) {
             promise.reject("ERR_RECORD", e.message ?: "Unknown error", e)
+        }
+    }
+
+    @ReactMethod
+    fun getShownIds(address: String, promise: Promise) {
+        try {
+            val prefs = reactApplicationContext.getSharedPreferences(
+                WallpaperWorker.PREFS_NAME, android.content.Context.MODE_PRIVATE
+            )
+            val ids = WallpaperWorker.readShownIds(prefs, address)
+            val out = Arguments.createArray()
+            ids.forEach { out.pushString(it) }
+            promise.resolve(out)
+        } catch (e: Exception) {
+            promise.reject("ERR_SHOWN_IDS", e.message ?: "Unknown error", e)
+        }
+    }
+
+    @ReactMethod
+    fun getDisplayHistory(address: String, promise: Promise) {
+        try {
+            val prefs = reactApplicationContext.getSharedPreferences(
+                WallpaperWorker.PREFS_NAME, android.content.Context.MODE_PRIVATE
+            )
+            val arr = WallpaperWorker.readDisplayHistoryRaw(prefs, address)
+            val out = Arguments.createArray()
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                val map = Arguments.createMap()
+                map.putDouble("setAt", item.optLong("setAt", 0L).toDouble())
+                map.putString("address", item.optString("address", ""))
+                val nft = item.optJSONObject("nft")
+                val nftMap = Arguments.createMap()
+                if (nft != null) {
+                    nftMap.putString("chain", nft.optString("chain", ""))
+                    nftMap.putString("contractAddress", nft.optString("contractAddress", ""))
+                    nftMap.putString("tokenId", nft.optString("tokenId", ""))
+                    nftMap.putString("name", nft.optString("name", ""))
+                    nftMap.putString("collectionName", nft.optString("collectionName", ""))
+                    nftMap.putString("imageUrl", nft.optString("imageUrl", ""))
+                    nftMap.putString("wallpaperUrl", nft.optString("wallpaperUrl", nft.optString("imageUrl", "")))
+                }
+                map.putMap("nft", nftMap)
+                out.pushMap(map)
+            }
+            promise.resolve(out)
+        } catch (e: Exception) {
+            promise.reject("ERR_DISPLAY_HISTORY", e.message ?: "Unknown error", e)
+        }
+    }
+
+    @ReactMethod
+    fun syncAutoDisplayState(address: String, shownIds: ReadableArray, entry: ReadableMap, promise: Promise) {
+        try {
+            val prefs = reactApplicationContext.getSharedPreferences(
+                WallpaperWorker.PREFS_NAME, android.content.Context.MODE_PRIVATE
+            )
+            val ids = mutableListOf<String>()
+            for (i in 0 until shownIds.size()) {
+                shownIds.getString(i)?.let { ids.add(it) }
+            }
+            WallpaperWorker.writeShownIds(prefs, address, ids)
+
+            val nftMap = entry.getMap("nft")
+                ?: return promise.reject("ERR_SYNC", "missing nft field")
+            val nftJson = JSONObject().apply {
+                put("chain", nftMap.getString("chain") ?: "")
+                put("contractAddress", nftMap.getString("contractAddress") ?: "")
+                put("tokenId", nftMap.getString("tokenId") ?: "")
+                put("name", nftMap.getString("name") ?: "")
+                put("collectionName", nftMap.getString("collectionName") ?: "")
+                val img = nftMap.getString("imageUrl") ?: ""
+                put("imageUrl", img)
+                put("wallpaperUrl", nftMap.getString("wallpaperUrl") ?: img)
+            }
+            val setAt = if (entry.hasKey("setAt")) entry.getDouble("setAt").toLong()
+                else System.currentTimeMillis()
+            WallpaperWorker.appendDisplayHistory(prefs, address, nftJson, setAt)
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("ERR_SYNC", e.message ?: "Unknown error", e)
         }
     }
 

@@ -26,6 +26,10 @@ import {
   requestBatteryOptimizationExemption,
   getCurrentWallpaper as getNativeCurrentWallpaper,
   recordCurrentWallpaper as recordNativeWallpaper,
+  getDisplayHistory as getNativeDisplayHistory,
+  getShownIds as getNativeShownIds,
+  syncAutoDisplayState,
+  type DisplayHistoryEntry as NativeDisplayHistoryEntry,
   type WorkerDebugStatus,
   type WallpaperInterval,
 } from './WallpaperManager';
@@ -34,11 +38,13 @@ import { useTranslation } from 'react-i18next';
 const ALCHEMY_API_KEY = process.env.EXPO_PUBLIC_ALCHEMY_API_KEY ?? 'YOUR_ALCHEMY_API_KEY';
 const PAGE_SIZE = 20;
 const STORAGE_KEY_WALLPAPER = 'nft_wallpaper_current';
-const STORAGE_KEY_AUTO_INDEX = 'auto_wallpaper_index';
 const STORAGE_KEY_AUTO_LAST_TS = 'auto_wallpaper_last_ts';
 const STORAGE_KEY_INTERVAL = 'wallpaper_interval';
 const STORAGE_KEY_LIST_PREFIX = 'nft_list_v1_';
 const STORAGE_KEY_AUTO_LIST_PREFIX = 'nft_auto_list_v1_';
+const STORAGE_KEY_DISPLAY_HISTORY_PREFIX = 'nft_display_history_v1_';
+const STORAGE_KEY_SHOWN_IDS_PREFIX = 'nft_shown_ids_v1_';
+const MAX_DISPLAY_HISTORY = 200;
 const NFT_LIST_TTL_MS = 10 * 60 * 1000; // 10 分鐘內視為新鮮，免再打 API
 const AUTO_LIST_TTL_MS = 60 * 60 * 1000; // 全部 NFT 清單變動慢，1 小時 TTL
 const INTERVAL_MS: Record<WallpaperInterval, number> = {
@@ -158,6 +164,142 @@ type WallpaperRecord = {
   setDate: string; // toDateString()
   address: string;
 };
+
+type DisplayHistoryEntry = {
+  nft: NFTItem;
+  setAt: number;
+  address: string;
+};
+
+function nftKey(nft: Pick<NFTItem, 'contractAddress' | 'tokenId'>) {
+  return `${nft.contractAddress}-${nft.tokenId}`;
+}
+
+function displayHistoryStorageKey(address: string) {
+  return STORAGE_KEY_DISPLAY_HISTORY_PREFIX + address;
+}
+
+function shownIdsStorageKey(address: string) {
+  return STORAGE_KEY_SHOWN_IDS_PREFIX + address;
+}
+
+function nativeEntryToLocal(raw: NativeDisplayHistoryEntry): DisplayHistoryEntry | null {
+  if (!raw?.nft?.contractAddress || !raw.nft.tokenId) return null;
+  const chain = (raw.nft.chain === 'tezos' ? 'tezos' : 'ethereum') as Chain;
+  return {
+    setAt: raw.setAt,
+    address: raw.address || '',
+    nft: {
+      chain,
+      contractAddress: raw.nft.contractAddress,
+      tokenId: raw.nft.tokenId,
+      name: raw.nft.name || `#${raw.nft.tokenId}`,
+      collectionName: raw.nft.collectionName || '',
+      imageUrl: raw.nft.imageUrl || null,
+      wallpaperUrl: raw.nft.wallpaperUrl || raw.nft.imageUrl || null,
+    },
+  };
+}
+
+function localEntryToNative(entry: DisplayHistoryEntry): NativeDisplayHistoryEntry {
+  return {
+    setAt: entry.setAt,
+    address: entry.address,
+    nft: {
+      chain: entry.nft.chain,
+      contractAddress: entry.nft.contractAddress,
+      tokenId: entry.nft.tokenId,
+      name: entry.nft.name,
+      collectionName: entry.nft.collectionName,
+      imageUrl: entry.nft.imageUrl ?? '',
+      wallpaperUrl: entry.nft.wallpaperUrl ?? entry.nft.imageUrl ?? '',
+    },
+  };
+}
+
+async function readLocalDisplayHistory(address: string): Promise<DisplayHistoryEntry[]> {
+  try {
+    const raw = await AsyncStorage.getItem(displayHistoryStorageKey(address));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as DisplayHistoryEntry[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function readLocalShownIds(address: string): Promise<string[]> {
+  try {
+    const raw = await AsyncStorage.getItem(shownIdsStorageKey(address));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as string[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeLocalShownIds(address: string, ids: string[]): Promise<void> {
+  await AsyncStorage.setItem(shownIdsStorageKey(address), JSON.stringify(ids));
+}
+
+async function appendLocalDisplayHistory(
+  address: string,
+  nft: NFTItem,
+  setAt: number
+): Promise<DisplayHistoryEntry[]> {
+  const entry: DisplayHistoryEntry = { nft, setAt, address };
+  const history = await readLocalDisplayHistory(address);
+  const key = nftKey(nft);
+  const next = [entry, ...history.filter(h => nftKey(h.nft) !== key)].slice(0, MAX_DISPLAY_HISTORY);
+  await AsyncStorage.setItem(displayHistoryStorageKey(address), JSON.stringify(next));
+  return next;
+}
+
+async function loadMergedDisplayHistory(address: string): Promise<DisplayHistoryEntry[]> {
+  const local = await readLocalDisplayHistory(address);
+  let native: DisplayHistoryEntry[] = [];
+  try {
+    const raw = await getNativeDisplayHistory(address);
+    native = raw.map(nativeEntryToLocal).filter((x): x is DisplayHistoryEntry => x !== null);
+  } catch {}
+
+  const merged = new Map<string, DisplayHistoryEntry>();
+  for (const entry of [...local, ...native].sort((a, b) => b.setAt - a.setAt)) {
+    const key = nftKey(entry.nft);
+    if (!merged.has(key)) merged.set(key, entry);
+  }
+  return [...merged.values()].sort((a, b) => b.setAt - a.setAt);
+}
+
+async function readMergedShownIds(address: string): Promise<string[]> {
+  const local = await readLocalShownIds(address);
+  let native: string[] = [];
+  try {
+    native = await getNativeShownIds(address);
+  } catch {}
+  return [...new Set([...local, ...native])];
+}
+
+function pickRandomUnshown(
+  nfts: NFTItem[],
+  shownIds: string[]
+): { nft: NFTItem; nextShownIds: string[] } {
+  const pool = nfts.filter(n => n.wallpaperUrl || n.imageUrl);
+  if (pool.length === 0) throw new Error('no images');
+  if (pool.length === 1) {
+    return { nft: pool[0], nextShownIds: [nftKey(pool[0])] };
+  }
+
+  let ids = [...shownIds];
+  let candidates = pool.filter(n => !ids.includes(nftKey(n)));
+  if (candidates.length === 0) {
+    ids = [];
+    candidates = pool;
+  }
+  const nft = candidates[Math.floor(Math.random() * candidates.length)];
+  return { nft, nextShownIds: [...ids, nftKey(nft)] };
+}
 
 function resolveUrl(url: string | null | undefined): string | null {
   if (!url) return null;
@@ -425,6 +567,7 @@ async function setAsWallpaper(nft: NFTItem, address: string, preloadedUri?: stri
   } catch {
     // 寫不到 native 不影響主流程（iOS 或 native module 載入失敗）
   }
+  await appendLocalDisplayHistory(address, nft, Date.now());
 }
 
 // ─── NFT Card ────────────────────────────────────────────────────────────────
@@ -525,6 +668,10 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
   const autoEnabled = true;
   const [interval, setIntervalPref] = useState<WallpaperInterval>('daily');
   const [showIntervalOptions, setShowIntervalOptions] = useState(false);
+  const [showDisplayHistory, setShowDisplayHistory] = useState(false);
+  const [displayHistoryEntries, setDisplayHistoryEntries] = useState<DisplayHistoryEntry[]>([]);
+  const [historyPreview, setHistoryPreview] = useState<WallpaperRecord | null>(null);
+  const [loadingDisplayHistory, setLoadingDisplayHistory] = useState(false);
   const [autoTick, setAutoTick] = useState(0);
   const [workerDebug, setWorkerDebug] = useState<WorkerDebugStatus | null>(null);
 
@@ -581,8 +728,8 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
     autoWallpaperBusy.current = true;
 
     const now = Date.now();
-    AsyncStorage.multiGet([STORAGE_KEY_WALLPAPER, STORAGE_KEY_AUTO_INDEX, STORAGE_KEY_AUTO_LAST_TS]).then(
-      async ([[, wallRaw], [, idxRaw], [, lastTsRaw]]) => {
+    AsyncStorage.multiGet([STORAGE_KEY_WALLPAPER, STORAGE_KEY_AUTO_LAST_TS]).then(
+      async ([[, wallRaw], [, lastTsRaw]]) => {
       try {
         const wall: WallpaperRecord | null = wallRaw ? JSON.parse(wallRaw) : null;
         let lastTs = lastTsRaw ? parseInt(lastTsRaw, 10) : 0;
@@ -607,22 +754,12 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
           return;
         }
 
-        const parsedIdx = idxRaw ? parseInt(idxRaw, 10) : -1;
-        const prevIdx = Number.isNaN(parsedIdx) ? -1 : parsedIdx;
-        const nextIdx = (() => {
-          if (autoNfts.length <= 1) return 0;
-          let candidate = Math.floor(Math.random() * autoNfts.length);
-          if (candidate === prevIdx) {
-            candidate =
-              (candidate + 1 + Math.floor(Math.random() * (autoNfts.length - 1))) % autoNfts.length;
-          }
-          return candidate;
-        })();
-        const nft = autoNfts[nextIdx];
+        const shownIds = await readMergedShownIds(address);
+        const { nft, nextShownIds } = pickRandomUnshown(autoNfts, shownIds);
         const targetUrl = nft?.wallpaperUrl || nft?.imageUrl;
         if (!targetUrl) return;
 
-        console.log('[AutoWallpaper] 自動換桌布:', nft.name, '(index', nextIdx, ')');
+        console.log('[AutoWallpaper] 自動換桌布:', nft.name, `(${nextShownIds.length}/${autoNfts.length})`);
         try {
           const dest = `${FileSystem.cacheDirectory}nft_wallpaper_auto.jpg`;
           const { status } = await FileSystem.downloadAsync(targetUrl, dest, { headers: DOWNLOAD_HEADERS });
@@ -631,9 +768,14 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
           const record: WallpaperRecord = { nft, setDate: new Date(now).toDateString(), address };
           await AsyncStorage.multiSet([
             [STORAGE_KEY_WALLPAPER, JSON.stringify(record)],
-            [STORAGE_KEY_AUTO_INDEX, String(nextIdx)],
             [STORAGE_KEY_AUTO_LAST_TS, String(now)],
           ]);
+          await writeLocalShownIds(address, nextShownIds);
+          const historyEntry: DisplayHistoryEntry = { nft, setAt: now, address };
+          await appendLocalDisplayHistory(address, nft, now);
+          try {
+            await syncAutoDisplayState(address, nextShownIds, localEntryToNative(historyEntry));
+          } catch {}
           try {
             await recordNativeWallpaper({
               setDate: record.setDate,
@@ -650,6 +792,9 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
             });
           } catch {}
           setCurrentWallpaper(record);
+          if (showDisplayHistory) {
+            setDisplayHistoryEntries(await loadMergedDisplayHistory(address));
+          }
           console.log('[AutoWallpaper] 完成（15 分鐘排程）');
         } catch (e: any) {
           console.warn('[AutoWallpaper] 失敗:', e?.message);
@@ -662,7 +807,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
       autoWallpaperBusy.current = false;
       console.warn('[AutoWallpaper] multiGet 失敗:', e?.message);
     });
-  }, [autoEnabled, loading, address, autoTick, interval]);
+  }, [autoEnabled, loading, address, autoTick, interval, showDisplayHistory]);
 
   const loadPage = useCallback(
     async (pageKey: string | undefined, options?: { forceRefresh?: boolean }) => {
@@ -872,6 +1017,20 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
     [t, onRemoveWallet]
   );
 
+  const openDisplayHistory = useCallback(async () => {
+    setLoadingDisplayHistory(true);
+    setShowDisplayHistory(true);
+    try {
+      const merged = await loadMergedDisplayHistory(address);
+      setDisplayHistoryEntries(merged);
+      await AsyncStorage.setItem(displayHistoryStorageKey(address), JSON.stringify(merged));
+      const mergedIds = await readMergedShownIds(address);
+      await writeLocalShownIds(address, mergedIds);
+    } finally {
+      setLoadingDisplayHistory(false);
+    }
+  }, [address]);
+
   const today = new Date().toDateString();
   const wallpaperSetToday =
     currentWallpaper?.setDate === today && currentWallpaper.address === address;
@@ -948,6 +1107,9 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
       {/* 更新頻率選項（點齒輪展開） */}
       {showIntervalOptions && (
         <View style={styles.intervalPanel}>
+          <TouchableOpacity style={styles.historyBtn} onPress={openDisplayHistory}>
+            <Text style={styles.historyBtnText}>{t('display_history')}</Text>
+          </TouchableOpacity>
           <Text style={styles.intervalLabel}>{t('interval_label')}：</Text>
           {(['15min', 'daily'] as WallpaperInterval[]).map(opt => (
             <TouchableOpacity
@@ -1107,7 +1269,119 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
         />
       )}
     </Modal>
+
+    {/* 展示紀錄全螢幕清單 */}
+    <Modal
+      visible={showDisplayHistory}
+      animationType="slide"
+      onRequestClose={() => setShowDisplayHistory(false)}
+    >
+      <DisplayHistoryScreen
+        entries={displayHistoryEntries}
+        loading={loadingDisplayHistory}
+        onClose={() => setShowDisplayHistory(false)}
+        onSelect={entry => {
+          setHistoryPreview({
+            nft: entry.nft,
+            setDate: new Date(entry.setAt).toDateString(),
+            address: entry.address,
+          });
+        }}
+      />
+    </Modal>
+
+    {/* 展示紀錄項目詳情 */}
+    <Modal
+      visible={!!historyPreview}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setHistoryPreview(null)}
+    >
+      {historyPreview && (
+        <WallpaperNoticeDialog
+          record={historyPreview}
+          onClose={() => setHistoryPreview(null)}
+        />
+      )}
+    </Modal>
     </>
+  );
+}
+
+// ─── Display History Screen ──────────────────────────────────────────────────
+
+function DisplayHistoryScreen({
+  entries,
+  loading,
+  onClose,
+  onSelect,
+}: {
+  entries: DisplayHistoryEntry[];
+  loading: boolean;
+  onClose: () => void;
+  onSelect: (entry: DisplayHistoryEntry) => void;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <View style={historyStyles.container}>
+      <View style={historyStyles.header}>
+        <Text style={historyStyles.headerTitle}>{t('display_history_title')}</Text>
+        <TouchableOpacity onPress={onClose} style={historyStyles.closeBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          <Text style={historyStyles.closeText}>✕</Text>
+        </TouchableOpacity>
+      </View>
+
+      {loading ? (
+        <View style={historyStyles.center}>
+          <ActivityIndicator size="large" color="#7c3aed" />
+        </View>
+      ) : entries.length === 0 ? (
+        <View style={historyStyles.center}>
+          <Text style={historyStyles.emptyIcon}>🖼️</Text>
+          <Text style={historyStyles.emptyText}>{t('display_history_empty')}</Text>
+          <Text style={historyStyles.emptySubtext}>{t('display_history_empty_sub')}</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={entries}
+          keyExtractor={item => `${nftKey(item.nft)}-${item.setAt}`}
+          contentContainerStyle={historyStyles.listContent}
+          renderItem={({ item }) => {
+            const thumb = resolveUrl(item.nft.imageUrl);
+            return (
+              <TouchableOpacity
+                style={historyStyles.row}
+                activeOpacity={0.85}
+                onPress={() => onSelect(item)}
+              >
+                {thumb ? (
+                  <Image source={{ uri: thumb }} style={historyStyles.thumb} contentFit="cover" />
+                ) : (
+                  <View style={[historyStyles.thumb, historyStyles.thumbEmpty]}>
+                    <Text style={historyStyles.thumbEmptyText}>🖼️</Text>
+                  </View>
+                )}
+                <View style={historyStyles.rowInfo}>
+                  <Text style={historyStyles.rowName} numberOfLines={2}>
+                    {item.nft.name || `#${item.nft.tokenId}`}
+                  </Text>
+                  {!!item.nft.collectionName && (
+                    <Text style={historyStyles.rowCollection} numberOfLines={1}>
+                      {item.nft.collectionName}
+                    </Text>
+                  )}
+                  <Text style={historyStyles.rowTime}>
+                    {new Date(item.setAt).toLocaleString()}
+                  </Text>
+                </View>
+                <Text style={historyStyles.chevron}>›</Text>
+              </TouchableOpacity>
+            );
+          }}
+        />
+      )}
+    </View>
   );
 }
 
@@ -1302,6 +1576,15 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#1e293b',
   },
+  historyBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#6366f1',
+    backgroundColor: '#1e1b4b',
+  },
+  historyBtnText: { color: '#c4b5fd', fontSize: 12, fontWeight: '700' },
   intervalLabel: { color: '#94a3b8', fontSize: 12 },
   intervalChip: {
     paddingHorizontal: 12,
@@ -1486,4 +1769,47 @@ const dialog = StyleSheet.create({
   btnDisabled: { opacity: 0.4 },
   btnTextSecondary: { color: '#e5e7eb', fontSize: 15, fontWeight: '600' },
   btnTextPrimary: { color: '#ffffff', fontSize: 15, fontWeight: '700' },
+});
+
+const historyStyles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#0f0f1a' },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingTop: Platform.OS === 'android' ? 48 : 56,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1f2937',
+  },
+  headerTitle: { flex: 1, color: '#fff', fontSize: 18, fontWeight: '700' },
+  closeBtn: { padding: 8 },
+  closeText: { color: '#9ca3af', fontSize: 20, fontWeight: '600' },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
+  emptyIcon: { fontSize: 48, marginBottom: 12 },
+  emptyText: { color: '#e5e7eb', fontSize: 17, fontWeight: '600' },
+  emptySubtext: { color: '#6b7280', fontSize: 13, marginTop: 6, textAlign: 'center' },
+  listContent: { paddingVertical: 8, paddingBottom: Platform.OS === 'android' ? 32 : 16 },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1f2937',
+    gap: 12,
+  },
+  thumb: {
+    width: 56,
+    height: 56,
+    borderRadius: 10,
+    backgroundColor: '#1a1a2e',
+  },
+  thumbEmpty: { alignItems: 'center', justifyContent: 'center' },
+  thumbEmptyText: { fontSize: 24 },
+  rowInfo: { flex: 1 },
+  rowName: { color: '#f3f4f6', fontSize: 15, fontWeight: '600' },
+  rowCollection: { color: '#6b7280', fontSize: 12, marginTop: 2 },
+  rowTime: { color: '#4b5563', fontSize: 11, marginTop: 4 },
+  chevron: { color: '#6b7280', fontSize: 22, fontWeight: '300' },
 });

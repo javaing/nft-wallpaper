@@ -31,6 +31,64 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         // 目前桌布的 NFT 完整資訊 (JSON) + 設定時間戳，供 JS 端 dialog 顯示
         const val KEY_CURRENT_RECORD = "current_wallpaper_record"
         const val KEY_CURRENT_RECORD_AT = "current_wallpaper_at"
+        const val KEY_SHOWN_IDS_PREFIX = "shown_ids_"
+        const val KEY_DISPLAY_HISTORY_PREFIX = "display_history_"
+        const val MAX_DISPLAY_HISTORY = 200
+
+        fun shownIdsKey(address: String) = KEY_SHOWN_IDS_PREFIX + address
+        fun displayHistoryKey(address: String) = KEY_DISPLAY_HISTORY_PREFIX + address
+
+        fun readShownIds(prefs: android.content.SharedPreferences, address: String): MutableSet<String> {
+            val raw = prefs.getString(shownIdsKey(address), "[]") ?: "[]"
+            return try {
+                val arr = JSONArray(raw)
+                (0 until arr.length()).mapTo(mutableSetOf()) { arr.getString(it) }
+            } catch (e: Exception) {
+                mutableSetOf()
+            }
+        }
+
+        fun writeShownIds(prefs: android.content.SharedPreferences, address: String, ids: Collection<String>) {
+            val arr = JSONArray()
+            ids.forEach { arr.put(it) }
+            prefs.edit().putString(shownIdsKey(address), arr.toString()).apply()
+        }
+
+        fun readDisplayHistoryRaw(prefs: android.content.SharedPreferences, address: String): JSONArray {
+            val raw = prefs.getString(displayHistoryKey(address), "[]") ?: "[]"
+            return try {
+                JSONArray(raw)
+            } catch (e: Exception) {
+                JSONArray()
+            }
+        }
+
+        fun appendDisplayHistory(
+            prefs: android.content.SharedPreferences,
+            address: String,
+            nftJson: JSONObject,
+            setAt: Long
+        ) {
+            val key = nftJson.optString("contractAddress", "") + "-" + nftJson.optString("tokenId", "")
+            val history = readDisplayHistoryRaw(prefs, address)
+            val next = JSONArray()
+            next.put(
+                JSONObject().apply {
+                    put("setAt", setAt)
+                    put("address", address)
+                    put("nft", nftJson)
+                }
+            )
+            for (i in 0 until history.length()) {
+                if (next.length() >= MAX_DISPLAY_HISTORY) break
+                val item = history.optJSONObject(i) ?: continue
+                val itemNft = item.optJSONObject("nft") ?: continue
+                val itemKey = itemNft.optString("contractAddress", "") + "-" + itemNft.optString("tokenId", "")
+                if (itemKey == key) continue
+                next.put(item)
+            }
+            prefs.edit().putString(displayHistoryKey(address), next.toString()).apply()
+        }
 
         fun schedule(context: Context, interval: String = INTERVAL_DAILY) {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -97,17 +155,10 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
             return Result.failure()
         }
 
-        val savedIndex = prefs.getInt(KEY_INDEX, -1)
-        val index = if (allNfts.size <= 1) {
-            0
-        } else {
-            var candidate = Random.nextInt(allNfts.size)
-            if (candidate == savedIndex) {
-                candidate = (candidate + 1 + Random.nextInt(allNfts.size - 1)) % allNfts.size
-            }
-            candidate
-        }
-        val chosen = allNfts[index]
+        val walletAddress = addresses.firstOrNull()?.trim() ?: addressRaw.trim()
+        val shownIds = readShownIds(prefs, walletAddress)
+        val chosen = pickRandomUnshown(allNfts, shownIds)
+        writeShownIds(prefs, walletAddress, shownIds)
 
         return try {
             val file = downloadImage(chosen.imageUrl)
@@ -123,15 +174,15 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                 put("address", chosen.ownerAddress)
                 put("source", "worker")
             }
+            appendDisplayHistory(prefs, walletAddress, chosen.toJson(), now)
             prefs.edit()
-                .putInt(KEY_INDEX, index)
                 .putLong(KEY_LAST_RUN_AT, now)
                 .putString(KEY_LAST_RESULT, "success")
-                .putString(KEY_LAST_MESSAGE, "設定 NFT #$index / ${allNfts.size}")
+                .putString(KEY_LAST_MESSAGE, "設定 ${chosen.name} / ${allNfts.size}")
                 .putString(KEY_CURRENT_RECORD, recordJson.toString())
                 .putLong(KEY_CURRENT_RECORD_AT, now)
                 .apply()
-            Log.d("WallpaperWorker", "壁紙設定成功 index=$index total=${allNfts.size}")
+            Log.d("WallpaperWorker", "壁紙設定成功 ${chosen.name} total=${allNfts.size}")
             Result.success()
         } catch (e: Exception) {
             Log.e("WallpaperWorker", "doWork error: ${e.message}")
@@ -159,6 +210,24 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
             put("imageUrl", imageUrl)
             put("wallpaperUrl", imageUrl)
         }
+
+        fun key(): String = "$contractAddress-$tokenId"
+    }
+
+    private fun pickRandomUnshown(
+        allNfts: List<NftInfo>,
+        shownIds: MutableSet<String>
+    ): NftInfo {
+        val pool = allNfts.filter { it.imageUrl.isNotBlank() }
+        require(pool.isNotEmpty()) { "無可用 NFT 圖片" }
+        var candidates = pool.filter { !shownIds.contains(it.key()) }
+        if (candidates.isEmpty()) {
+            shownIds.clear()
+            candidates = pool
+        }
+        val chosen = candidates[Random.nextInt(candidates.size)]
+        shownIds.add(chosen.key())
+        return chosen
     }
 
     private fun fetchEthereumNfts(address: String, apiKey: String, out: MutableList<NftInfo>) {

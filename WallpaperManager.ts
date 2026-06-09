@@ -84,6 +84,45 @@ export async function getCurrentWallpaper(): Promise<NativeCurrentWallpaper | nu
 }
 
 /** JS 端手動設定桌布後同步寫入 native，讓 Worker 與 JS 共享同一份狀態 */
+export type DisplayHistoryEntry = {
+  setAt: number;
+  address: string;
+  nft: {
+    chain: 'ethereum' | 'tezos' | '';
+    contractAddress: string;
+    tokenId: string;
+    name: string;
+    collectionName: string;
+    imageUrl: string;
+    wallpaperUrl: string;
+  };
+};
+
+/** 讀取 native 端已展示過的 NFT ID（與 Worker 共享） */
+export async function getShownIds(address: string): Promise<string[]> {
+  if (Platform.OS !== 'android') return [];
+  if (!NativeModules.WallpaperModule?.getShownIds) return [];
+  return NativeModules.WallpaperModule.getShownIds(address);
+}
+
+/** 讀取 native 端保存的展示紀錄（Worker 背景換桌布也會寫入） */
+export async function getDisplayHistory(address: string): Promise<DisplayHistoryEntry[]> {
+  if (Platform.OS !== 'android') return [];
+  if (!NativeModules.WallpaperModule?.getDisplayHistory) return [];
+  return NativeModules.WallpaperModule.getDisplayHistory(address);
+}
+
+/** 同步展示紀錄與已展示 ID 到 native（與 Worker 共享） */
+export async function syncAutoDisplayState(
+  address: string,
+  shownIds: string[],
+  entry: DisplayHistoryEntry
+): Promise<void> {
+  if (Platform.OS !== 'android') return;
+  if (!NativeModules.WallpaperModule?.syncAutoDisplayState) return;
+  return NativeModules.WallpaperModule.syncAutoDisplayState(address, shownIds, entry);
+}
+
 export async function recordCurrentWallpaper(record: {
   setDate?: string;
   address?: string;

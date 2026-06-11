@@ -33,10 +33,35 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         const val KEY_CURRENT_RECORD_AT = "current_wallpaper_at"
         const val KEY_SHOWN_IDS_PREFIX = "shown_ids_"
         const val KEY_DISPLAY_HISTORY_PREFIX = "display_history_"
+        const val KEY_HISTORY_RESET_DATE_PREFIX = "history_reset_date_"
         const val MAX_DISPLAY_HISTORY = 200
 
         fun shownIdsKey(address: String) = KEY_SHOWN_IDS_PREFIX + address
         fun displayHistoryKey(address: String) = KEY_DISPLAY_HISTORY_PREFIX + address
+        fun historyResetDateKey(address: String) = KEY_HISTORY_RESET_DATE_PREFIX + address
+
+        fun todayDateKey(): String {
+            return java.text.SimpleDateFormat("EEE MMM dd yyyy", java.util.Locale.US)
+                .format(java.util.Date())
+        }
+
+        fun clearDisplayHistory(prefs: android.content.SharedPreferences, address: String) {
+            prefs.edit().putString(displayHistoryKey(address), "[]").apply()
+        }
+
+        /** 每日清空展示紀錄；不動 shown_ids。回傳 true 表示剛清空。 */
+        fun maybeResetDailyDisplayHistory(
+            prefs: android.content.SharedPreferences,
+            address: String
+        ): Boolean {
+            val today = todayDateKey()
+            val last = prefs.getString(historyResetDateKey(address), null)
+            if (last == today) return false
+            clearDisplayHistory(prefs, address)
+            prefs.edit().putString(historyResetDateKey(address), today).apply()
+            Log.d("WallpaperWorker", "daily display history reset for $address")
+            return true
+        }
 
         fun readShownIds(prefs: android.content.SharedPreferences, address: String): MutableSet<String> {
             val raw = prefs.getString(shownIdsKey(address), "[]") ?: "[]"
@@ -69,6 +94,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
             nftJson: JSONObject,
             setAt: Long
         ) {
+            maybeResetDailyDisplayHistory(prefs, address)
             val key = nftJson.optString("contractAddress", "") + "-" + nftJson.optString("tokenId", "")
             val history = readDisplayHistoryRaw(prefs, address)
             val next = JSONArray()
@@ -156,6 +182,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         }
 
         val walletAddress = addresses.firstOrNull()?.trim() ?: addressRaw.trim()
+        maybeResetDailyDisplayHistory(prefs, walletAddress)
         val shownIds = readShownIds(prefs, walletAddress)
         val chosen = pickRandomUnshown(allNfts, shownIds)
         writeShownIds(prefs, walletAddress, shownIds)

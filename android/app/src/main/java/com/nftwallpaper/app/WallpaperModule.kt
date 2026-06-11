@@ -181,6 +181,19 @@ class WallpaperModule(reactContext: ReactApplicationContext) :
     }
 
     @ReactMethod
+    fun maybeResetDailyDisplayHistory(address: String, promise: Promise) {
+        try {
+            val prefs = reactApplicationContext.getSharedPreferences(
+                WallpaperWorker.PREFS_NAME, android.content.Context.MODE_PRIVATE
+            )
+            val reset = WallpaperWorker.maybeResetDailyDisplayHistory(prefs, address)
+            promise.resolve(reset)
+        } catch (e: Exception) {
+            promise.reject("ERR_HISTORY_RESET", e.message ?: "Unknown error", e)
+        }
+    }
+
+    @ReactMethod
     fun getShownIds(address: String, promise: Promise) {
         try {
             val prefs = reactApplicationContext.getSharedPreferences(

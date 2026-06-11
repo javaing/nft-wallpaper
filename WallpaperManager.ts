@@ -98,6 +98,13 @@ export type DisplayHistoryEntry = {
   };
 };
 
+/** 每日清空 native 展示紀錄（不動 shown_ids）；回傳 true 表示剛清空 */
+export async function maybeResetDailyDisplayHistoryNative(address: string): Promise<boolean> {
+  if (Platform.OS !== 'android') return false;
+  if (!NativeModules.WallpaperModule?.maybeResetDailyDisplayHistory) return false;
+  return NativeModules.WallpaperModule.maybeResetDailyDisplayHistory(address);
+}
+
 /** 讀取 native 端已展示過的 NFT ID（與 Worker 共享） */
 export async function getShownIds(address: string): Promise<string[]> {
   if (Platform.OS !== 'android') return [];

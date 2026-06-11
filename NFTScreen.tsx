@@ -29,6 +29,7 @@ import {
   getDisplayHistory as getNativeDisplayHistory,
   getShownIds as getNativeShownIds,
   syncAutoDisplayState,
+  maybeResetDailyDisplayHistoryNative,
   type DisplayHistoryEntry as NativeDisplayHistoryEntry,
   type WorkerDebugStatus,
   type WallpaperInterval,
@@ -44,6 +45,7 @@ const STORAGE_KEY_LIST_PREFIX = 'nft_list_v1_';
 const STORAGE_KEY_AUTO_LIST_PREFIX = 'nft_auto_list_v1_';
 const STORAGE_KEY_DISPLAY_HISTORY_PREFIX = 'nft_display_history_v1_';
 const STORAGE_KEY_SHOWN_IDS_PREFIX = 'nft_shown_ids_v1_';
+const STORAGE_KEY_HISTORY_RESET_DATE_PREFIX = 'nft_history_reset_date_v1_';
 const MAX_DISPLAY_HISTORY = 200;
 const NFT_LIST_TTL_MS = 10 * 60 * 1000; // 10 分鐘內視為新鮮，免再打 API
 const AUTO_LIST_TTL_MS = 60 * 60 * 1000; // 全部 NFT 清單變動慢，1 小時 TTL
@@ -183,6 +185,31 @@ function shownIdsStorageKey(address: string) {
   return STORAGE_KEY_SHOWN_IDS_PREFIX + address;
 }
 
+function historyResetDateStorageKey(address: string) {
+  return STORAGE_KEY_HISTORY_RESET_DATE_PREFIX + address;
+}
+
+function todayDateKey() {
+  return new Date().toDateString();
+}
+
+/** 每日 0:00（本地日曆日）清空展示紀錄；不動 shown_ids */
+async function maybeResetDailyDisplayHistory(address: string): Promise<boolean> {
+  if (!address) return false;
+  const today = todayDateKey();
+  const last = await AsyncStorage.getItem(historyResetDateStorageKey(address));
+  if (last === today) return false;
+
+  await AsyncStorage.multiSet([
+    [displayHistoryStorageKey(address), '[]'],
+    [historyResetDateStorageKey(address), today],
+  ]);
+  try {
+    await maybeResetDailyDisplayHistoryNative(address);
+  } catch {}
+  return true;
+}
+
 function nativeEntryToLocal(raw: NativeDisplayHistoryEntry): DisplayHistoryEntry | null {
   if (!raw?.nft?.contractAddress || !raw.nft.tokenId) return null;
   const chain = (raw.nft.chain === 'tezos' ? 'tezos' : 'ethereum') as Chain;
@@ -248,6 +275,7 @@ async function appendLocalDisplayHistory(
   nft: NFTItem,
   setAt: number
 ): Promise<DisplayHistoryEntry[]> {
+  await maybeResetDailyDisplayHistory(address);
   const entry: DisplayHistoryEntry = { nft, setAt, address };
   const history = await readLocalDisplayHistory(address);
   const key = nftKey(nft);
@@ -257,6 +285,7 @@ async function appendLocalDisplayHistory(
 }
 
 async function loadMergedDisplayHistory(address: string): Promise<DisplayHistoryEntry[]> {
+  await maybeResetDailyDisplayHistory(address);
   const local = await readLocalDisplayHistory(address);
   let native: DisplayHistoryEntry[] = [];
   try {
@@ -872,6 +901,12 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
     setTotalCount(undefined);
     setSelectedNFT(null);
   }, [selectedAddress]);
+
+  // 每日清空展示紀錄（跨日開 App 或切換錢包時觸發）
+  useEffect(() => {
+    if (!address) return;
+    maybeResetDailyDisplayHistory(address).catch(() => {});
+  }, [address]);
 
   // 首次載入 + 讀取設定，自動模式永遠啟用
   useEffect(() => {

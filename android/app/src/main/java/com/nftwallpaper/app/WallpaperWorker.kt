@@ -32,6 +32,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         const val KEY_CURRENT_RECORD = "current_wallpaper_record"
         const val KEY_CURRENT_RECORD_AT = "current_wallpaper_at"
         const val KEY_SHOWN_IDS_PREFIX = "shown_ids_"
+        const val KEY_SHOWN_IDS_GLOBAL_SCOPE = "__global__"
         const val KEY_DISPLAY_HISTORY_PREFIX = "display_history_"
         const val KEY_HISTORY_RESET_DATE_PREFIX = "history_reset_date_"
         const val MAX_DISPLAY_HISTORY = 200
@@ -63,8 +64,8 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
             return true
         }
 
-        fun readShownIds(prefs: android.content.SharedPreferences, address: String): MutableSet<String> {
-            val raw = prefs.getString(shownIdsKey(address), "[]") ?: "[]"
+        fun readShownIds(prefs: android.content.SharedPreferences, scope: String): MutableSet<String> {
+            val raw = prefs.getString(shownIdsKey(scope), "[]") ?: "[]"
             return try {
                 val arr = JSONArray(raw)
                 (0 until arr.length()).mapTo(mutableSetOf()) { arr.getString(it) }
@@ -73,10 +74,10 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
             }
         }
 
-        fun writeShownIds(prefs: android.content.SharedPreferences, address: String, ids: Collection<String>) {
+        fun writeShownIds(prefs: android.content.SharedPreferences, scope: String, ids: Collection<String>) {
             val arr = JSONArray()
             ids.forEach { arr.put(it) }
-            prefs.edit().putString(shownIdsKey(address), arr.toString()).apply()
+            prefs.edit().putString(shownIdsKey(scope), arr.toString()).apply()
         }
 
         fun readDisplayHistoryRaw(prefs: android.content.SharedPreferences, address: String): JSONArray {
@@ -95,7 +96,8 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
             setAt: Long
         ) {
             maybeResetDailyDisplayHistory(prefs, address)
-            val key = nftJson.optString("contractAddress", "") + "-" + nftJson.optString("tokenId", "")
+            val legacyKey = nftJson.optString("contractAddress", "") + "-" + nftJson.optString("tokenId", "")
+            val key = nftJson.optString("chain", "") + ":" + legacyKey
             val history = readDisplayHistoryRaw(prefs, address)
             val next = JSONArray()
             next.put(
@@ -109,8 +111,9 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                 if (next.length() >= MAX_DISPLAY_HISTORY) break
                 val item = history.optJSONObject(i) ?: continue
                 val itemNft = item.optJSONObject("nft") ?: continue
-                val itemKey = itemNft.optString("contractAddress", "") + "-" + itemNft.optString("tokenId", "")
-                if (itemKey == key) continue
+                val itemLegacyKey = itemNft.optString("contractAddress", "") + "-" + itemNft.optString("tokenId", "")
+                val itemKey = itemNft.optString("chain", "") + ":" + itemLegacyKey
+                if (itemKey == key || itemLegacyKey == legacyKey) continue
                 next.put(item)
             }
             prefs.edit().putString(displayHistoryKey(address), next.toString()).apply()
@@ -183,9 +186,9 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
 
         val walletAddress = addresses.firstOrNull()?.trim() ?: addressRaw.trim()
         maybeResetDailyDisplayHistory(prefs, walletAddress)
-        val shownIds = readShownIds(prefs, walletAddress)
+        val shownIds = readShownIds(prefs, KEY_SHOWN_IDS_GLOBAL_SCOPE)
         val chosen = pickRandomUnshown(allNfts, shownIds)
-        writeShownIds(prefs, walletAddress, shownIds)
+        writeShownIds(prefs, KEY_SHOWN_IDS_GLOBAL_SCOPE, shownIds)
 
         return try {
             val file = downloadImage(chosen.imageUrl)
@@ -201,7 +204,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                 put("address", chosen.ownerAddress)
                 put("source", "worker")
             }
-            appendDisplayHistory(prefs, walletAddress, chosen.toJson(), now)
+            appendDisplayHistory(prefs, chosen.ownerAddress, chosen.toJson(), now)
             prefs.edit()
                 .putLong(KEY_LAST_RUN_AT, now)
                 .putString(KEY_LAST_RESULT, "success")
@@ -238,7 +241,8 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
             put("wallpaperUrl", imageUrl)
         }
 
-        fun key(): String = "$contractAddress-$tokenId"
+        fun key(): String = "$chain:$contractAddress-$tokenId"
+        fun legacyKey(): String = "$contractAddress-$tokenId"
     }
 
     private fun pickRandomUnshown(
@@ -247,7 +251,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
     ): NftInfo {
         val pool = allNfts.filter { it.imageUrl.isNotBlank() }
         require(pool.isNotEmpty()) { "無可用 NFT 圖片" }
-        var candidates = pool.filter { !shownIds.contains(it.key()) }
+        var candidates = pool.filter { !shownIds.contains(it.key()) && !shownIds.contains(it.legacyKey()) }
         if (candidates.isEmpty()) {
             shownIds.clear()
             candidates = pool

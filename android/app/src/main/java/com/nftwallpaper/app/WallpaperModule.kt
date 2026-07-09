@@ -199,7 +199,9 @@ class WallpaperModule(reactContext: ReactApplicationContext) :
             val prefs = reactApplicationContext.getSharedPreferences(
                 WallpaperWorker.PREFS_NAME, android.content.Context.MODE_PRIVATE
             )
-            val ids = WallpaperWorker.readShownIds(prefs, address)
+            val ids = mutableSetOf<String>()
+            ids.addAll(WallpaperWorker.readShownIds(prefs, address))
+            ids.addAll(WallpaperWorker.readShownIds(prefs, WallpaperWorker.KEY_SHOWN_IDS_GLOBAL_SCOPE))
             val out = Arguments.createArray()
             ids.forEach { out.pushString(it) }
             promise.resolve(out)
@@ -252,6 +254,7 @@ class WallpaperModule(reactContext: ReactApplicationContext) :
                 shownIds.getString(i)?.let { ids.add(it) }
             }
             WallpaperWorker.writeShownIds(prefs, address, ids)
+            WallpaperWorker.writeShownIds(prefs, WallpaperWorker.KEY_SHOWN_IDS_GLOBAL_SCOPE, ids)
 
             val nftMap = entry.getMap("nft")
                 ?: return promise.reject("ERR_SYNC", "missing nft field")

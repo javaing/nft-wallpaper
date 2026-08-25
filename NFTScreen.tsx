@@ -337,24 +337,45 @@ async function readMergedShownIdsForWallets(addresses: string[]): Promise<string
   ];
 }
 
+const IPFS_GATEWAYS = [
+  'https://gateway.pinata.cloud/ipfs/',
+  'https://4everland.io/ipfs/',
+  'https://w3s.link/ipfs/',
+  'https://dweb.link/ipfs/',
+  'https://nftstorage.link/ipfs/',
+  'https://ipfs.io/ipfs/',
+];
+
+function ipfsCidPath(url: string): string | null {
+  const trimmed = url.trim();
+  if (trimmed.startsWith('ipfs://')) {
+    return trimmed.replace(/^ipfs:\/\/(ipfs\/)?/, '').replace(/^\//, '');
+  }
+  const idx = trimmed.indexOf('/ipfs/');
+  if (idx >= 0) {
+    return trimmed.slice(idx + '/ipfs/'.length).split('?')[0].replace(/^\//, '');
+  }
+  return null;
+}
+
 function wallpaperCandidateUrls(nft: NFTItem): string[] {
   const primary = nft.wallpaperUrl || nft.imageUrl;
   if (!primary) return [];
-  const urls = [primary];
-  if (primary.includes('/ipfs/')) {
-    const cid = primary.split('/ipfs/')[1];
-    if (cid) {
-      urls.push(`https://cloudflare-ipfs.com/ipfs/${cid}`);
-      urls.push(`https://ipfs.io/ipfs/${cid}`);
-    }
+  const urls: string[] = [];
+  const cid = ipfsCidPath(primary) || (nft.imageUrl ? ipfsCidPath(nft.imageUrl) : null);
+  if (cid) {
+    for (const gw of IPFS_GATEWAYS) urls.push(gw + cid);
+  } else {
+    urls.push(primary);
+    if (nft.imageUrl && nft.imageUrl !== primary) urls.push(nft.imageUrl);
   }
-  if (nft.imageUrl && nft.imageUrl !== primary) urls.push(nft.imageUrl);
   return [...new Set(urls)];
 }
 
 function pickRandomUnshown(
   nfts: NFTItem[],
-  shownIds: string[]
+  shownIds: string[],
+  ownerByKey: Map<string, string>
 ): { nft: NFTItem; nextShownIds: string[] } {
   const pool = nfts.filter(n => n.wallpaperUrl || n.imageUrl);
   if (pool.length === 0) throw new Error('no images');
@@ -363,15 +384,70 @@ function pickRandomUnshown(
     return { nft: only, nextShownIds: [...new Set([...shownIds, nftKey(only)])] };
   }
 
+  // 先均勻抽鏈（有進池的鏈各 50%），該鏈已抽完才重置該鏈，不讓 ETH 未展示把 Tezos 卡死
+  const chains = [...new Set(pool.map(n => n.chain))];
+  const chain = chains[Math.floor(Math.random() * chains.length)];
+  const chainPool = pool.filter(n => n.chain === chain);
+
   let ids = [...shownIds];
   const shownSet = new Set(ids);
-  let candidates = pool.filter(n => !shownSet.has(nftKey(n)) && !shownSet.has(legacyNftKey(n)));
-  if (candidates.length === 0) {
-    ids = [];
-    candidates = pool;
+  let chainCandidates = chainPool.filter(n => !shownSet.has(nftKey(n)) && !shownSet.has(legacyNftKey(n)));
+  if (chainCandidates.length === 0) {
+    const chainKeys = new Set(chainPool.flatMap(n => [nftKey(n), legacyNftKey(n)]));
+    ids = ids.filter(id => !chainKeys.has(id));
+    chainCandidates = chainPool;
+    console.log('[AutoWallpaper] chain cycle reset', chain, 'pool=', chainPool.length);
   }
-  const nft = candidates[Math.floor(Math.random() * candidates.length)];
+
+  const byWallet = new Map<string, NFTItem[]>();
+  for (const nft of chainCandidates) {
+    const owner = ownerByKey.get(nftKey(nft)) ?? chain;
+    const list = byWallet.get(owner) ?? [];
+    list.push(nft);
+    byWallet.set(owner, list);
+  }
+  const walletKeys = [...byWallet.keys()];
+  const wallet = walletKeys[Math.floor(Math.random() * walletKeys.length)];
+  const walletNfts = byWallet.get(wallet)!;
+  const nft = walletNfts[Math.floor(Math.random() * walletNfts.length)];
+  console.log(
+    '[AutoWallpaper] pick',
+    `chain=${chain}/${chains.join('+')}`,
+    `wallet=${wallet.slice(0, 8)}… (${walletKeys.length} on chain)`,
+    `name=${nft.name}`,
+    `chainUnshown=${chainCandidates.length} walletN=${walletNfts.length}`
+  );
   return { nft, nextShownIds: [...ids, nftKey(nft)] };
+}
+
+function logPoolBreakdown(
+  nfts: NFTItem[],
+  ownerByKey: Map<string, string>,
+  shownIds: string[],
+  skipped: Set<string>
+) {
+  const shownSet = new Set(shownIds);
+  const byOwner = new Map<string, NFTItem[]>();
+  for (const nft of nfts) {
+    if (skipped.has(nftKey(nft))) continue;
+    const owner = ownerByKey.get(nftKey(nft)) ?? '?';
+    const list = byOwner.get(owner) ?? [];
+    list.push(nft);
+    byOwner.set(owner, list);
+  }
+  const eth = nfts.filter(n => n.chain === 'ethereum' && !skipped.has(nftKey(n))).length;
+  const xtz = nfts.filter(n => n.chain === 'tezos' && !skipped.has(nftKey(n))).length;
+  console.log(
+    `[AutoWallpaper] pool wallets=${byOwner.size} eth=${eth} xtz=${xtz} shownIds=${shownIds.length} skipped=${skipped.size}`
+  );
+  for (const [owner, list] of byOwner) {
+    const withImg = list.filter(n => n.wallpaperUrl || n.imageUrl);
+    const unshown = withImg.filter(n => !shownSet.has(nftKey(n)) && !shownSet.has(legacyNftKey(n)));
+    const chain = list[0]?.chain ?? detectChain(owner) ?? '?';
+    console.log(
+      `[AutoWallpaper]   ${chain} ${owner.slice(0, 6)}…${owner.slice(-4)} total=${list.length} img=${withImg.length} unshown=${unshown.length}`
+    );
+  }
 }
 
 async function fetchWithTimeout(url: string, timeoutMs = FETCH_TIMEOUT_MS): Promise<Response> {
@@ -386,8 +462,9 @@ async function fetchWithTimeout(url: string, timeoutMs = FETCH_TIMEOUT_MS): Prom
 
 function resolveUrl(url: string | null | undefined): string | null {
   if (!url) return null;
-  if (url.startsWith('ipfs://')) return `https://ipfs.io/ipfs/${url.slice(7)}`;
   if (url.startsWith('ar://')) return `https://arweave.net/${url.slice(5)}`;
+  const cid = ipfsCidPath(url);
+  if (cid) return `${IPFS_GATEWAYS[0]}${cid}`;
   return url;
 }
 
@@ -631,7 +708,13 @@ async function collectAutoPool(wallets: string[]): Promise<{
   for (const wallet of wallets) {
     try {
       const items = await fetchAllNftsForAuto(wallet);
-      console.log('[AutoWallpaper] pool', detectChain(wallet), items.length, wallet.slice(0, 10));
+      const withImg = items.filter(n => n.wallpaperUrl || n.imageUrl).length;
+      console.log(
+        '[AutoWallpaper] fetched',
+        detectChain(wallet),
+        `${wallet.slice(0, 6)}…${wallet.slice(-4)}`,
+        `total=${items.length} img=${withImg}`
+      );
       for (const nft of items) {
         const key = nftKey(nft);
         if (ownerByKey.has(key)) continue;
@@ -639,9 +722,12 @@ async function collectAutoPool(wallets: string[]): Promise<{
         ownerByKey.set(key, wallet);
       }
     } catch (e: any) {
-      console.warn('[AutoWallpaper] skip wallet', wallet, e?.message);
+      console.warn('[AutoWallpaper] skip wallet', detectChain(wallet), wallet.slice(0, 10), e?.message);
     }
   }
+  const eth = nfts.filter(n => n.chain === 'ethereum').length;
+  const xtz = nfts.filter(n => n.chain === 'tezos').length;
+  console.log(`[AutoWallpaper] collect done eth=${eth} xtz=${xtz} wallets=${wallets.length}`);
   return { nfts, ownerByKey };
 }
 
@@ -885,11 +971,12 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
         const skipped = new Set<string>();
         let applied = false;
         let lastError: string | undefined;
+        logPoolBreakdown(autoNfts, ownerByKey, shownIds, skipped);
 
-        for (let attempt = 0; attempt < 8; attempt++) {
+        for (let attempt = 0; attempt < 12; attempt++) {
           const pool = autoNfts.filter(n => !skipped.has(nftKey(n)));
           if (pool.length === 0) break;
-          const { nft, nextShownIds } = pickRandomUnshown(pool, shownIds);
+          const { nft, nextShownIds } = pickRandomUnshown(pool, shownIds, ownerByKey);
           const targetUrl = nft?.wallpaperUrl || nft?.imageUrl;
           if (!targetUrl) {
             skipped.add(nftKey(nft));

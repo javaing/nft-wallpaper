@@ -45,6 +45,18 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         const val FETCH_BUDGET_MS = 7 * 60 * 1000L
         const val HTTP_CONNECT_MS = 8000
         const val HTTP_READ_MS = 12000
+        const val IMAGE_CONNECT_MS = 12000
+        const val IMAGE_READ_MS = 20000
+        const val BROWSER_UA =
+            "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+        val IPFS_GATEWAYS = listOf(
+            "https://gateway.pinata.cloud/ipfs/",
+            "https://4everland.io/ipfs/",
+            "https://w3s.link/ipfs/",
+            "https://dweb.link/ipfs/",
+            "https://nftstorage.link/ipfs/",
+            "https://ipfs.io/ipfs/",
+        )
 
         fun shownIdsKey(address: String) = KEY_SHOWN_IDS_PREFIX + address
         fun displayHistoryKey(address: String) = KEY_DISPLAY_HISTORY_PREFIX + address
@@ -203,7 +215,13 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
 
         val ethCount = allNfts.count { it.chain == "ethereum" }
         val xtzCount = allNfts.count { it.chain == "tezos" }
-        Log.d("WallpaperWorker", "pool eth=$ethCount xtz=$xtzCount total=${allNfts.size} wallets=${addresses.size}")
+        Log.i("WallpaperWorker", "pool eth=$ethCount xtz=$xtzCount total=${allNfts.size} wallets=${addresses.size}")
+        for (addr in addresses) {
+            val n = allNfts.count { it.ownerAddress == addr }
+            val chain = allNfts.firstOrNull { it.ownerAddress == addr }?.chain
+                ?: if (addr.startsWith("tz") || addr.startsWith("KT")) "tezos" else "ethereum"
+            Log.i("WallpaperWorker", "  $chain ${addr.take(6)}…${addr.takeLast(4)} count=$n")
+        }
 
         if (allNfts.isEmpty()) {
             saveResult(prefs, "error", "無 NFT 可設定")
@@ -222,7 +240,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
 
         val skipped = mutableSetOf<String>()
         var lastError: Exception? = null
-        repeat(8) {
+        repeat(12) {
             val remaining = allNfts.filter { !skipped.contains(it.key()) && !skipped.contains(it.legacyKey()) }
             if (remaining.isEmpty()) return@repeat
             val chosen = try {
@@ -252,11 +270,11 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                 prefs.edit()
                     .putLong(KEY_LAST_RUN_AT, now)
                     .putString(KEY_LAST_RESULT, "success")
-                    .putString(KEY_LAST_MESSAGE, "設定 ${chosen.chain} ${chosen.name} / eth=$ethCount xtz=$xtzCount")
+                    .putString(KEY_LAST_MESSAGE, "pick ${chosen.chain} ${chosen.name} / eth=$ethCount xtz=$xtzCount")
                     .putString(KEY_CURRENT_RECORD, recordJson.toString())
                     .putLong(KEY_CURRENT_RECORD_AT, now)
                     .apply()
-                Log.d("WallpaperWorker", "壁紙設定成功 ${chosen.chain} ${chosen.name} total=${allNfts.size}")
+                Log.i("WallpaperWorker", "壁紙設定成功 ${chosen.chain} ${chosen.name} total=${allNfts.size}")
                 return Result.success()
             } catch (e: Exception) {
                 lastError = e
@@ -299,12 +317,29 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
     ): NftInfo {
         val pool = allNfts.filter { it.imageUrl.isNotBlank() }
         require(pool.isNotEmpty()) { "無可用 NFT 圖片" }
-        var candidates = pool.filter { !shownIds.contains(it.key()) && !shownIds.contains(it.legacyKey()) }
-        if (candidates.isEmpty()) {
-            shownIds.clear()
-            candidates = pool
+
+        val chains = pool.map { it.chain }.distinct()
+        val chain = chains[Random.nextInt(chains.size)]
+        val chainPool = pool.filter { it.chain == chain }
+
+        var chainCandidates = chainPool.filter { !shownIds.contains(it.key()) && !shownIds.contains(it.legacyKey()) }
+        if (chainCandidates.isEmpty()) {
+            val chainKeys = chainPool.flatMap { listOf(it.key(), it.legacyKey()) }.toSet()
+            shownIds.removeAll(chainKeys)
+            chainCandidates = chainPool
+            Log.i("WallpaperWorker", "chain cycle reset $chain pool=${chainPool.size}")
         }
-        val chosen = candidates[Random.nextInt(candidates.size)]
+
+        val byWallet = chainCandidates.groupBy { it.ownerAddress }
+        val wallets = byWallet.keys.toList()
+        val wallet = wallets[Random.nextInt(wallets.size)]
+        val walletNfts = byWallet.getValue(wallet)
+        val chosen = walletNfts[Random.nextInt(walletNfts.size)]
+        Log.i(
+            "WallpaperWorker",
+            "pick chain=$chain/${chains.joinToString("+")} wallet=${wallet.take(8)}… " +
+                "name=${chosen.name} chainUnshown=${chainCandidates.size} walletN=${walletNfts.size}"
+        )
         return chosen
     }
 
@@ -361,7 +396,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                 pageKey = nextPageKey
                 page++
             }
-            Log.d("WallpaperWorker", "Ethereum NFTs fetched: ${out.size - before} from $address")
+            Log.i("WallpaperWorker", "Ethereum NFTs fetched: ${out.size - before} from $address")
         } catch (e: Exception) {
             Log.e("WallpaperWorker", "fetchEthereumNfts error: ${e.message}")
         }
@@ -414,7 +449,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                 offset += pageSize
                 page++
             }
-            Log.d("WallpaperWorker", "Tezos NFTs fetched: ${out.size - before} from $address")
+            Log.i("WallpaperWorker", "Tezos NFTs fetched: ${out.size - before} from $address")
         } catch (e: Exception) {
             Log.e("WallpaperWorker", "fetchTezosNfts error: ${e.message}")
         }
@@ -431,22 +466,35 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
     }
 
     private fun resolveIpfs(url: String): String {
-        return if (url.startsWith("ipfs://")) {
-            "https://ipfs.io/ipfs/${url.removePrefix("ipfs://")}"
-        } else url
+        val cid = ipfsCidPath(url)
+        return if (cid != null) "${IPFS_GATEWAYS.first()}$cid" else url
+    }
+
+    private fun ipfsCidPath(url: String): String? {
+        val trimmed = url.trim()
+        if (trimmed.startsWith("ipfs://")) {
+            return trimmed.removePrefix("ipfs://").removePrefix("ipfs/").trimStart('/')
+        }
+        if ("/ipfs/" in trimmed) {
+            return trimmed.substringAfter("/ipfs/").substringBefore('?').trimStart('/')
+        }
+        return null
     }
 
     private fun downloadImage(imageUrl: String): File {
-        val urls = linkedSetOf(imageUrl)
-        if (imageUrl.contains("/ipfs/")) {
-            val cidPath = imageUrl.substringAfter("/ipfs/")
-            urls.add("https://cloudflare-ipfs.com/ipfs/$cidPath")
-            urls.add("https://ipfs.io/ipfs/$cidPath")
+        val urls = linkedSetOf<String>()
+        val cid = ipfsCidPath(imageUrl)
+        if (cid != null) {
+            IPFS_GATEWAYS.forEach { urls.add("$it$cid") }
+        } else {
+            urls.add(imageUrl)
         }
         var last: Exception? = null
         for (url in urls) {
             try {
-                return downloadImageOnce(url)
+                val file = downloadImageOnce(url)
+                Log.i("WallpaperWorker", "download ok $url")
+                return file
             } catch (e: Exception) {
                 last = e
                 Log.w("WallpaperWorker", "download failed $url: ${e.message}")
@@ -457,11 +505,13 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
 
     private fun downloadImageOnce(imageUrl: String): File {
         val conn = URL(imageUrl).openConnection() as HttpURLConnection
-        conn.setRequestProperty("User-Agent", "NFTWallpaper/1.0")
-        conn.connectTimeout = HTTP_CONNECT_MS
-        conn.readTimeout = HTTP_READ_MS
+        conn.instanceFollowRedirects = true
+        conn.setRequestProperty("User-Agent", BROWSER_UA)
+        conn.setRequestProperty("Accept", "image/webp,image/png,image/jpeg,image/*,*/*")
+        conn.connectTimeout = IMAGE_CONNECT_MS
+        conn.readTimeout = IMAGE_READ_MS
         conn.connect()
-        if (conn.responseCode != 200) {
+        if (conn.responseCode !in 200..299) {
             val code = conn.responseCode
             conn.disconnect()
             throw Exception("HTTP $code downloading image")

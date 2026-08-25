@@ -46,10 +46,13 @@ const STORAGE_KEY_AUTO_LIST_PREFIX = 'nft_auto_list_v1_';
 const STORAGE_KEY_DISPLAY_HISTORY_PREFIX = 'nft_display_history_v1_';
 const STORAGE_KEY_SHOWN_IDS_PREFIX = 'nft_shown_ids_v1_';
 const STORAGE_KEY_SHOWN_IDS_GLOBAL = 'nft_shown_ids_v2_global';
-const STORAGE_KEY_HISTORY_RESET_DATE_PREFIX = 'nft_history_reset_date_v1_';
+const STORAGE_KEY_HISTORY_RESET_DATE_GLOBAL = 'nft_history_reset_date_v2_global';
+const DISPLAY_HISTORY_GLOBAL_SCOPE = '__global__';
 const MAX_DISPLAY_HISTORY = 200;
 const NFT_LIST_TTL_MS = 10 * 60 * 1000; // 10 分鐘內視為新鮮，免再打 API
 const AUTO_LIST_TTL_MS = 60 * 60 * 1000; // 全部 NFT 清單變動慢，1 小時 TTL
+const FETCH_TIMEOUT_MS = 20 * 1000;
+const AUTO_FETCH_BUDGET_MS = 45 * 1000; // 單一錢包最多抓 45 秒，避免卡住 15 分鐘輪播
 const INTERVAL_MS: Record<WallpaperInterval, number> = {
   '15min': 15 * 60 * 1000,
   'daily': 24 * 60 * 60 * 1000,
@@ -190,28 +193,27 @@ function shownIdsStorageKey(scope: string) {
   return STORAGE_KEY_SHOWN_IDS_PREFIX + scope;
 }
 
-function historyResetDateStorageKey(address: string) {
-  return STORAGE_KEY_HISTORY_RESET_DATE_PREFIX + address;
-}
-
 function todayDateKey() {
   return new Date().toDateString();
 }
 
-/** 每日 0:00（本地日曆日）清空展示紀錄；不動 shown_ids */
-async function maybeResetDailyDisplayHistory(address: string): Promise<boolean> {
-  if (!address) return false;
+/** 每日 0:00（本地日曆日）清空展示紀錄；不動 shown_ids。跨錢包共用同一份。 */
+async function maybeResetDailyDisplayHistoryAll(addresses: string[]): Promise<boolean> {
   const today = todayDateKey();
-  const last = await AsyncStorage.getItem(historyResetDateStorageKey(address));
+  const last = await AsyncStorage.getItem(STORAGE_KEY_HISTORY_RESET_DATE_GLOBAL);
   if (last === today) return false;
 
-  await AsyncStorage.multiSet([
-    [displayHistoryStorageKey(address), '[]'],
-    [historyResetDateStorageKey(address), today],
-  ]);
-  try {
-    await maybeResetDailyDisplayHistoryNative(address);
-  } catch {}
+  const scopes = [...new Set([DISPLAY_HISTORY_GLOBAL_SCOPE, ...addresses.filter(Boolean)])];
+  const pairs: [string, string][] = [
+    [STORAGE_KEY_HISTORY_RESET_DATE_GLOBAL, today],
+    ...scopes.map(scope => [displayHistoryStorageKey(scope), '[]'] as [string, string]),
+  ];
+  await AsyncStorage.multiSet(pairs);
+  for (const scope of scopes) {
+    try {
+      await maybeResetDailyDisplayHistoryNative(scope);
+    } catch {}
+  }
   return true;
 }
 
@@ -276,30 +278,37 @@ async function writeLocalShownIds(scope: string, ids: string[]): Promise<void> {
 }
 
 async function appendLocalDisplayHistory(
-  address: string,
+  ownerAddress: string,
   nft: NFTItem,
-  setAt: number
+  setAt: number,
+  wallets: string[] = []
 ): Promise<DisplayHistoryEntry[]> {
-  await maybeResetDailyDisplayHistory(address);
-  const entry: DisplayHistoryEntry = { nft, setAt, address };
-  const history = await readLocalDisplayHistory(address);
+  await maybeResetDailyDisplayHistoryAll([ownerAddress, ...wallets]);
+  const entry: DisplayHistoryEntry = { nft, setAt, address: ownerAddress };
+  const history = await readLocalDisplayHistory(DISPLAY_HISTORY_GLOBAL_SCOPE);
   const key = nftKey(nft);
   const next = [entry, ...history.filter(h => nftKey(h.nft) !== key)].slice(0, MAX_DISPLAY_HISTORY);
-  await AsyncStorage.setItem(displayHistoryStorageKey(address), JSON.stringify(next));
+  await AsyncStorage.setItem(displayHistoryStorageKey(DISPLAY_HISTORY_GLOBAL_SCOPE), JSON.stringify(next));
   return next;
 }
 
-async function loadMergedDisplayHistory(address: string): Promise<DisplayHistoryEntry[]> {
-  await maybeResetDailyDisplayHistory(address);
-  const local = await readLocalDisplayHistory(address);
-  let native: DisplayHistoryEntry[] = [];
-  try {
-    const raw = await getNativeDisplayHistory(address);
-    native = raw.map(nativeEntryToLocal).filter((x): x is DisplayHistoryEntry => x !== null);
-  } catch {}
+async function loadMergedDisplayHistory(addresses: string[]): Promise<DisplayHistoryEntry[]> {
+  await maybeResetDailyDisplayHistoryAll(addresses);
+  const scopes = [...new Set([DISPLAY_HISTORY_GLOBAL_SCOPE, ...addresses.filter(Boolean)])];
+  const lists = await Promise.all(
+    scopes.map(async scope => {
+      const local = await readLocalDisplayHistory(scope);
+      let native: DisplayHistoryEntry[] = [];
+      try {
+        const raw = await getNativeDisplayHistory(scope);
+        native = raw.map(nativeEntryToLocal).filter((x): x is DisplayHistoryEntry => x !== null);
+      } catch {}
+      return [...local, ...native];
+    })
+  );
 
   const merged = new Map<string, DisplayHistoryEntry>();
-  for (const entry of [...local, ...native].sort((a, b) => b.setAt - a.setAt)) {
+  for (const entry of lists.flat().sort((a, b) => b.setAt - a.setAt)) {
     const key = nftKey(entry.nft);
     if (!merged.has(key)) merged.set(key, entry);
   }
@@ -328,6 +337,21 @@ async function readMergedShownIdsForWallets(addresses: string[]): Promise<string
   ];
 }
 
+function wallpaperCandidateUrls(nft: NFTItem): string[] {
+  const primary = nft.wallpaperUrl || nft.imageUrl;
+  if (!primary) return [];
+  const urls = [primary];
+  if (primary.includes('/ipfs/')) {
+    const cid = primary.split('/ipfs/')[1];
+    if (cid) {
+      urls.push(`https://cloudflare-ipfs.com/ipfs/${cid}`);
+      urls.push(`https://ipfs.io/ipfs/${cid}`);
+    }
+  }
+  if (nft.imageUrl && nft.imageUrl !== primary) urls.push(nft.imageUrl);
+  return [...new Set(urls)];
+}
+
 function pickRandomUnshown(
   nfts: NFTItem[],
   shownIds: string[]
@@ -335,7 +359,8 @@ function pickRandomUnshown(
   const pool = nfts.filter(n => n.wallpaperUrl || n.imageUrl);
   if (pool.length === 0) throw new Error('no images');
   if (pool.length === 1) {
-    return { nft: pool[0], nextShownIds: [nftKey(pool[0])] };
+    const only = pool[0];
+    return { nft: only, nextShownIds: [...new Set([...shownIds, nftKey(only)])] };
   }
 
   let ids = [...shownIds];
@@ -347,6 +372,16 @@ function pickRandomUnshown(
   }
   const nft = candidates[Math.floor(Math.random() * candidates.length)];
   return { nft, nextShownIds: [...ids, nftKey(nft)] };
+}
+
+async function fetchWithTimeout(url: string, timeoutMs = FETCH_TIMEOUT_MS): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function resolveUrl(url: string | null | undefined): string | null {
@@ -454,10 +489,14 @@ async function fetchTezosPage(
   const url =
     `https://api.tzkt.io/v1/tokens/balances` +
     `?account=${address}&limit=${PAGE_SIZE}&offset=${offset}` +
-    `&token.standard=fa2`;
+    `&token.standard=fa2&balance.gt=0`;
 
   console.log('[TzKT] GET', url);
-  const res = await fetch(url);
+  let res = await fetchWithTimeout(url);
+  if (res.status === 429) {
+    await new Promise(r => setTimeout(r, 1500));
+    res = await fetchWithTimeout(url);
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     console.error('[TzKT] error', res.status, body);
@@ -511,11 +550,11 @@ async function fetchEthPage(
 
   const fetchWithRetry = async (url: string, retries = 2): Promise<Response> => {
     for (let i = 0; i <= retries; i++) {
-      const r = await fetch(url);
+      const r = await fetchWithTimeout(url);
       if (r.status !== 503 || i === retries) return r;
       await new Promise(res => setTimeout(res, 1000 * (i + 1)));
     }
-    return fetch(url);
+    return fetchWithTimeout(url);
   };
 
   console.log('[Alchemy] GET v3', urlV3);
@@ -556,13 +595,23 @@ async function fetchAllNftsForAuto(
   const items: NFTItem[] = [];
   let pageKey: string | undefined = undefined;
   const MAX_PAGES = 25;
+  const started = Date.now();
 
   for (let page = 0; page < MAX_PAGES; page++) {
-    const result: { items: NFTItem[]; nextPageKey?: string; totalCount?: number } =
-      chain === 'tezos' ? await fetchTezosPage(address, pageKey) : await fetchEthPage(address, pageKey);
-    items.push(...result.items);
-    if (!result.nextPageKey) break;
-    pageKey = result.nextPageKey;
+    if (Date.now() - started > AUTO_FETCH_BUDGET_MS) {
+      console.warn('[AutoWallpaper] fetch budget exceeded for', address, `pages=${page} items=${items.length}`);
+      break;
+    }
+    try {
+      const result: { items: NFTItem[]; nextPageKey?: string; totalCount?: number } =
+        chain === 'tezos' ? await fetchTezosPage(address, pageKey) : await fetchEthPage(address, pageKey);
+      items.push(...result.items);
+      if (!result.nextPageKey) break;
+      pageKey = result.nextPageKey;
+    } catch (e: any) {
+      console.warn('[AutoWallpaper] page failed, use partial', address, e?.message);
+      break;
+    }
   }
 
   // 抓失敗（空陣列）不寫 cache，避免把空清單卡進來
@@ -572,7 +621,36 @@ async function fetchAllNftsForAuto(
   return items;
 }
 
-async function setAsWallpaper(nft: NFTItem, address: string, preloadedUri?: string): Promise<void> {
+async function collectAutoPool(wallets: string[]): Promise<{
+  nfts: NFTItem[];
+  ownerByKey: Map<string, string>;
+}> {
+  const nfts: NFTItem[] = [];
+  const ownerByKey = new Map<string, string>();
+  // 逐錢包抓：避免兩個 Tezos 平行打 TzKT 被 429，也避免一錢包失敗讓 Promise.all 整池清空
+  for (const wallet of wallets) {
+    try {
+      const items = await fetchAllNftsForAuto(wallet);
+      console.log('[AutoWallpaper] pool', detectChain(wallet), items.length, wallet.slice(0, 10));
+      for (const nft of items) {
+        const key = nftKey(nft);
+        if (ownerByKey.has(key)) continue;
+        nfts.push(nft);
+        ownerByKey.set(key, wallet);
+      }
+    } catch (e: any) {
+      console.warn('[AutoWallpaper] skip wallet', wallet, e?.message);
+    }
+  }
+  return { nfts, ownerByKey };
+}
+
+async function setAsWallpaper(
+  nft: NFTItem,
+  address: string,
+  preloadedUri?: string,
+  wallets: string[] = []
+): Promise<void> {
   // 桌布優先用高畫質 wallpaperUrl，fallback 到 imageUrl
   const targetUrl = nft.wallpaperUrl || nft.imageUrl;
   if (!targetUrl) throw new Error('此 NFT 沒有圖片');
@@ -615,7 +693,7 @@ async function setAsWallpaper(nft: NFTItem, address: string, preloadedUri?: stri
   } catch {
     // 寫不到 native 不影響主流程（iOS 或 native module 載入失敗）
   }
-  await appendLocalDisplayHistory(address, nft, Date.now());
+  await appendLocalDisplayHistory(address, nft, Date.now(), wallets);
 }
 
 // ─── NFT Card ────────────────────────────────────────────────────────────────
@@ -796,62 +874,100 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
         // 後續 effect / JS reload 讀到新 lastTs 就會 skip
         await AsyncStorage.setItem(STORAGE_KEY_AUTO_LAST_TS, String(now));
 
-        const autoLists = await Promise.all(wallets.map(wallet => fetchAllNftsForAuto(wallet)));
-        const autoNfts = autoLists.flat();
+        const { nfts: autoNfts, ownerByKey } = await collectAutoPool(wallets);
         if (autoNfts.length === 0) {
           console.warn('[AutoWallpaper] 找不到可用 NFT（auto list empty）');
+          await AsyncStorage.setItem(STORAGE_KEY_AUTO_LAST_TS, String(now - INTERVAL_MS[interval] + 60 * 1000));
           return;
         }
 
         const shownIds = await readMergedShownIdsForWallets(wallets);
-        const { nft, nextShownIds } = pickRandomUnshown(autoNfts, shownIds);
-        const targetUrl = nft?.wallpaperUrl || nft?.imageUrl;
-        if (!targetUrl) return;
+        const skipped = new Set<string>();
+        let applied = false;
+        let lastError: string | undefined;
 
-        console.log('[AutoWallpaper] 自動換桌布:', nft.name, `(${nextShownIds.length}/${autoNfts.length})`);
-        try {
-          const dest = `${FileSystem.cacheDirectory}nft_wallpaper_auto.jpg`;
-          const { status } = await FileSystem.downloadAsync(targetUrl, dest, { headers: DOWNLOAD_HEADERS });
-          if (status !== 200) throw new Error('下載失敗');
-          await setWallpaperDirect(dest);
-          const record: WallpaperRecord = { nft, setDate: new Date(now).toDateString(), address };
-          await AsyncStorage.multiSet([
-            [STORAGE_KEY_WALLPAPER, JSON.stringify(record)],
-            [STORAGE_KEY_AUTO_LAST_TS, String(now)],
-          ]);
-          await writeLocalShownIds(STORAGE_KEY_SHOWN_IDS_GLOBAL, nextShownIds);
-          const historyEntry: DisplayHistoryEntry = { nft, setAt: now, address };
-          await appendLocalDisplayHistory(address, nft, now);
-          try {
-            await Promise.all(
-              wallets.map(wallet =>
-                syncAutoDisplayState(wallet, nextShownIds, localEntryToNative({ ...historyEntry, address: wallet }))
-                  .catch(() => {})
-              )
-            );
-          } catch {}
-          try {
-            await recordNativeWallpaper({
-              setDate: record.setDate,
-              address: record.address,
-              nft: {
-                chain: nft.chain,
-                contractAddress: nft.contractAddress,
-                tokenId: nft.tokenId,
-                name: nft.name,
-                collectionName: nft.collectionName,
-                imageUrl: nft.imageUrl ?? '',
-                wallpaperUrl: nft.wallpaperUrl ?? nft.imageUrl ?? '',
-              },
-            });
-          } catch {}
-          setCurrentWallpaper(record);
-          if (showDisplayHistory) {
-            setDisplayHistoryEntries(await loadMergedDisplayHistory(address));
+        for (let attempt = 0; attempt < 8; attempt++) {
+          const pool = autoNfts.filter(n => !skipped.has(nftKey(n)));
+          if (pool.length === 0) break;
+          const { nft, nextShownIds } = pickRandomUnshown(pool, shownIds);
+          const targetUrl = nft?.wallpaperUrl || nft?.imageUrl;
+          if (!targetUrl) {
+            skipped.add(nftKey(nft));
+            continue;
           }
-          console.log('[AutoWallpaper] 完成（15 分鐘排程）');
-        } catch (e: any) {
-          console.warn('[AutoWallpaper] 失敗:', e?.message);
+          const ownerAddress = ownerByKey.get(nftKey(nft)) ?? address;
+          console.log(
+            '[AutoWallpaper] try',
+            nft.chain,
+            nft.name,
+            `(${nextShownIds.length}/${autoNfts.length}) owner=${ownerAddress.slice(0, 8)}`
+          );
+          try {
+            const dest = `${FileSystem.cacheDirectory}nft_wallpaper_auto.jpg`;
+            const urls = wallpaperCandidateUrls(nft);
+            let downloaded = false;
+            for (const url of urls) {
+              try {
+                const { status } = await FileSystem.downloadAsync(url, dest, { headers: DOWNLOAD_HEADERS });
+                if (status === 200) {
+                  downloaded = true;
+                  break;
+                }
+              } catch {}
+            }
+            if (!downloaded) throw new Error('下載失敗');
+            await setWallpaperDirect(dest);
+            const record: WallpaperRecord = {
+              nft,
+              setDate: new Date(now).toDateString(),
+              address: ownerAddress,
+            };
+            await AsyncStorage.multiSet([
+              [STORAGE_KEY_WALLPAPER, JSON.stringify(record)],
+              [STORAGE_KEY_AUTO_LAST_TS, String(now)],
+            ]);
+            await writeLocalShownIds(STORAGE_KEY_SHOWN_IDS_GLOBAL, nextShownIds);
+            const historyEntry: DisplayHistoryEntry = { nft, setAt: now, address: ownerAddress };
+            await appendLocalDisplayHistory(ownerAddress, nft, now, wallets);
+            try {
+              await syncAutoDisplayState(
+                DISPLAY_HISTORY_GLOBAL_SCOPE,
+                nextShownIds,
+                localEntryToNative(historyEntry)
+              );
+            } catch {}
+            try {
+              await recordNativeWallpaper({
+                setDate: record.setDate,
+                address: record.address,
+                nft: {
+                  chain: nft.chain,
+                  contractAddress: nft.contractAddress,
+                  tokenId: nft.tokenId,
+                  name: nft.name,
+                  collectionName: nft.collectionName,
+                  imageUrl: nft.imageUrl ?? '',
+                  wallpaperUrl: nft.wallpaperUrl ?? nft.imageUrl ?? '',
+                },
+              });
+            } catch {}
+            setCurrentWallpaper(record);
+            if (showDisplayHistory) {
+              setDisplayHistoryEntries(await loadMergedDisplayHistory(wallets));
+            }
+            applied = true;
+            console.log('[AutoWallpaper] 完成', nft.chain, nft.name);
+            break;
+          } catch (e: any) {
+            lastError = e?.message;
+            skipped.add(nftKey(nft));
+            console.warn('[AutoWallpaper] candidate failed, try next', nft.chain, nft.name, lastError);
+          }
+        }
+
+        if (!applied) {
+          console.warn('[AutoWallpaper] 全部候選失敗:', lastError);
+          await AsyncStorage.setItem(STORAGE_KEY_AUTO_LAST_TS, String(now - INTERVAL_MS[interval] + 60 * 1000));
         }
       } finally {
         autoWallpaperBusy.current = false;
@@ -927,11 +1043,11 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
     setSelectedNFT(null);
   }, [selectedAddress]);
 
-  // 每日清空展示紀錄（跨日開 App 或切換錢包時觸發）
+  // 每日清空展示紀錄（跨日開 App 或錢包清單變動時觸發）
   useEffect(() => {
-    if (!address) return;
-    maybeResetDailyDisplayHistory(address).catch(() => {});
-  }, [address]);
+    if (wallets.length === 0) return;
+    maybeResetDailyDisplayHistoryAll(wallets).catch(() => {});
+  }, [wallets]);
 
   // 首次載入 + 讀取設定，自動模式永遠啟用
   useEffect(() => {
@@ -995,7 +1111,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
     // 等 AsyncStorage 載入完才排程，避免 'daily' (初始) → '15min' (storage) 排兩次造成 worker reset
     if (!settingsLoaded) return;
     // 同 address+interval 只排一次（即便 React 多次 render / StrictMode 雙 render）
-    const key = `${address}|${interval}`;
+    const key = `${wallets.map(w => w.toLowerCase()).join(',')}|${interval}`;
     if (lastScheduledKey.current === key) return;
     lastScheduledKey.current = key;
 
@@ -1021,7 +1137,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
         }
       })
       .catch(e => console.warn('[AutoWallpaper] 排程失敗:', e?.message));
-  }, [address, interval, settingsLoaded, wallets]);
+  }, [interval, settingsLoaded, wallets, t]);
 
   const goNextPage = useCallback(() => {
     if (!nextPageKey) return;
@@ -1049,7 +1165,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
     try {
       const key = nftKey(selectedNFT);
       const preloaded = preloadedKey.current === key ? PRELOAD_URI : undefined;
-      await setAsWallpaper(selectedNFT, address, preloaded);
+      await setAsWallpaper(selectedNFT, address, preloaded, wallets);
       setCurrentWallpaper({
         nft: selectedNFT,
         setDate: new Date().toDateString(),
@@ -1061,7 +1177,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
     } finally {
       setSettingWallpaper(false);
     }
-  }, [selectedNFT, address]);
+  }, [selectedNFT, address, wallets]);
 
   const promptRemoveWallet = useCallback(
     (addr: string) => {
@@ -1081,9 +1197,9 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
     setLoadingDisplayHistory(true);
     setShowDisplayHistory(true);
     try {
-      const merged = await loadMergedDisplayHistory(address);
+      const merged = await loadMergedDisplayHistory(wallets);
       setDisplayHistoryEntries(merged);
-      await AsyncStorage.setItem(displayHistoryStorageKey(address), JSON.stringify(merged));
+      await AsyncStorage.setItem(displayHistoryStorageKey(DISPLAY_HISTORY_GLOBAL_SCOPE), JSON.stringify(merged));
       const mergedIds = await readMergedShownIdsForWallets(wallets);
       await writeLocalShownIds(STORAGE_KEY_SHOWN_IDS_GLOBAL, mergedIds);
     } finally {
@@ -1092,8 +1208,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
   }, [address, wallets]);
 
   const today = new Date().toDateString();
-  const wallpaperSetToday =
-    currentWallpaper?.setDate === today && currentWallpaper.address === address;
+  const wallpaperSetToday = currentWallpaper?.setDate === today;
 
   return (
     <>
@@ -1215,7 +1330,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
       </View>
 
       {/* 每日換桌布提示 */}
-      {!wallpaperSetToday && currentWallpaper && currentWallpaper.address === address && (
+      {!wallpaperSetToday && currentWallpaper && (
         <View style={styles.dailyBanner}>
           <Text style={styles.dailyBannerText}>{t('daily_banner')}</Text>
         </View>

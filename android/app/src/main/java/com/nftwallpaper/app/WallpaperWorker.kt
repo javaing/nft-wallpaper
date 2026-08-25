@@ -15,6 +15,12 @@ import kotlin.random.Random
 class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
     Worker(context, workerParams) {
 
+    private var workDeadline = 0L
+
+    private fun budgetExceeded(deadline: Long = workDeadline): Boolean {
+        return System.currentTimeMillis() >= deadline
+    }
+
     companion object {
         const val PREFS_NAME = "WallpaperWorkerPrefs"
         const val KEY_ADDRESS = "wallet_address"
@@ -36,6 +42,9 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         const val KEY_DISPLAY_HISTORY_PREFIX = "display_history_"
         const val KEY_HISTORY_RESET_DATE_PREFIX = "history_reset_date_"
         const val MAX_DISPLAY_HISTORY = 200
+        const val FETCH_BUDGET_MS = 7 * 60 * 1000L
+        const val HTTP_CONNECT_MS = 8000
+        const val HTTP_READ_MS = 12000
 
         fun shownIdsKey(address: String) = KEY_SHOWN_IDS_PREFIX + address
         fun displayHistoryKey(address: String) = KEY_DISPLAY_HISTORY_PREFIX + address
@@ -91,19 +100,20 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
 
         fun appendDisplayHistory(
             prefs: android.content.SharedPreferences,
-            address: String,
+            historyScope: String,
             nftJson: JSONObject,
-            setAt: Long
+            setAt: Long,
+            ownerAddress: String = historyScope
         ) {
-            maybeResetDailyDisplayHistory(prefs, address)
+            maybeResetDailyDisplayHistory(prefs, historyScope)
             val legacyKey = nftJson.optString("contractAddress", "") + "-" + nftJson.optString("tokenId", "")
             val key = nftJson.optString("chain", "") + ":" + legacyKey
-            val history = readDisplayHistoryRaw(prefs, address)
+            val history = readDisplayHistoryRaw(prefs, historyScope)
             val next = JSONArray()
             next.put(
                 JSONObject().apply {
                     put("setAt", setAt)
-                    put("address", address)
+                    put("address", ownerAddress)
                     put("nft", nftJson)
                 }
             )
@@ -116,7 +126,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                 if (itemKey == key || itemLegacyKey == legacyKey) continue
                 next.put(item)
             }
-            prefs.edit().putString(displayHistoryKey(address), next.toString()).apply()
+            prefs.edit().putString(displayHistoryKey(historyScope), next.toString()).apply()
         }
 
         fun schedule(context: Context, interval: String = INTERVAL_DAILY) {
@@ -163,62 +173,100 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
 
         val addresses = try {
             val arr = JSONArray(addressRaw)
-            (0 until arr.length()).map { arr.getString(it) }
+            (0 until arr.length()).map { arr.getString(it).trim() }.filter { it.isNotBlank() }
         } catch (e: Exception) {
-            listOf(addressRaw)
+            listOf(addressRaw.trim()).filter { it.isNotBlank() }
         }
 
+        if (addresses.isEmpty()) {
+            saveResult(prefs, "error", "address 未設定")
+            return Result.failure()
+        }
+
+        workDeadline = System.currentTimeMillis() + FETCH_BUDGET_MS
+        val perWalletMs = FETCH_BUDGET_MS / addresses.size
         val allNfts = mutableListOf<NftInfo>()
 
-        for (address in addresses) {
-            val addr = address.trim()
+        // 每個錢包均分時間，避免 ETH 先抓滿 10 分鐘導致 Tezos 完全沒進池
+        for (addr in addresses) {
+            if (budgetExceeded()) {
+                Log.w("WallpaperWorker", "fetch budget exceeded before $addr, have ${allNfts.size}")
+                break
+            }
+            val addrDeadline = minOf(workDeadline, System.currentTimeMillis() + perWalletMs)
             if (addr.startsWith("tz") || addr.startsWith("KT")) {
-                fetchTezosNfts(addr, allNfts)
-            } else if (addr.isNotBlank() && !apiKey.isNullOrBlank()) {
-                fetchEthereumNfts(addr, apiKey, allNfts)
+                fetchTezosNfts(addr, allNfts, addrDeadline)
+            } else if (!apiKey.isNullOrBlank()) {
+                fetchEthereumNfts(addr, apiKey, allNfts, addrDeadline)
             }
         }
+
+        val ethCount = allNfts.count { it.chain == "ethereum" }
+        val xtzCount = allNfts.count { it.chain == "tezos" }
+        Log.d("WallpaperWorker", "pool eth=$ethCount xtz=$xtzCount total=${allNfts.size} wallets=${addresses.size}")
 
         if (allNfts.isEmpty()) {
             saveResult(prefs, "error", "無 NFT 可設定")
             return Result.failure()
         }
 
-        val walletAddress = addresses.firstOrNull()?.trim() ?: addressRaw.trim()
-        maybeResetDailyDisplayHistory(prefs, walletAddress)
-        val shownIds = readShownIds(prefs, KEY_SHOWN_IDS_GLOBAL_SCOPE)
-        val chosen = pickRandomUnshown(allNfts, shownIds)
-        writeShownIds(prefs, KEY_SHOWN_IDS_GLOBAL_SCOPE, shownIds)
-
-        return try {
-            val file = downloadImage(chosen.imageUrl)
-            file.inputStream().use { stream ->
-                WallpaperManager.getInstance(applicationContext).setStream(stream)
-            }
-            file.delete()
-            val now = System.currentTimeMillis()
-            val recordJson = JSONObject().apply {
-                put("nft", chosen.toJson())
-                put("setDate", java.text.SimpleDateFormat("EEE MMM dd yyyy", java.util.Locale.US)
-                    .format(java.util.Date(now)))
-                put("address", chosen.ownerAddress)
-                put("source", "worker")
-            }
-            appendDisplayHistory(prefs, chosen.ownerAddress, chosen.toJson(), now)
-            prefs.edit()
-                .putLong(KEY_LAST_RUN_AT, now)
-                .putString(KEY_LAST_RESULT, "success")
-                .putString(KEY_LAST_MESSAGE, "設定 ${chosen.name} / ${allNfts.size}")
-                .putString(KEY_CURRENT_RECORD, recordJson.toString())
-                .putLong(KEY_CURRENT_RECORD_AT, now)
-                .apply()
-            Log.d("WallpaperWorker", "壁紙設定成功 ${chosen.name} total=${allNfts.size}")
-            Result.success()
-        } catch (e: Exception) {
-            Log.e("WallpaperWorker", "doWork error: ${e.message}")
-            saveResult(prefs, "error", e.message ?: "Unknown error")
-            Result.failure()
+        maybeResetDailyDisplayHistory(prefs, KEY_SHOWN_IDS_GLOBAL_SCOPE)
+        for (addr in addresses) {
+            maybeResetDailyDisplayHistory(prefs, addr)
         }
+
+        val shownIds = readShownIds(prefs, KEY_SHOWN_IDS_GLOBAL_SCOPE)
+        for (addr in addresses) {
+            shownIds.addAll(readShownIds(prefs, addr))
+        }
+
+        val skipped = mutableSetOf<String>()
+        var lastError: Exception? = null
+        repeat(8) {
+            val remaining = allNfts.filter { !skipped.contains(it.key()) && !skipped.contains(it.legacyKey()) }
+            if (remaining.isEmpty()) return@repeat
+            val chosen = try {
+                pickRandomUnshown(remaining, shownIds)
+            } catch (e: Exception) {
+                lastError = e
+                return@repeat
+            }
+            try {
+                val file = downloadImage(chosen.imageUrl)
+                file.inputStream().use { stream ->
+                    WallpaperManager.getInstance(applicationContext).setStream(stream)
+                }
+                file.delete()
+                shownIds.add(chosen.key())
+                writeShownIds(prefs, KEY_SHOWN_IDS_GLOBAL_SCOPE, shownIds)
+                val now = System.currentTimeMillis()
+                val recordJson = JSONObject().apply {
+                    put("nft", chosen.toJson())
+                    put("setDate", java.text.SimpleDateFormat("EEE MMM dd yyyy", java.util.Locale.US)
+                        .format(java.util.Date(now)))
+                    put("address", chosen.ownerAddress)
+                    put("source", "worker")
+                }
+                appendDisplayHistory(prefs, KEY_SHOWN_IDS_GLOBAL_SCOPE, chosen.toJson(), now, chosen.ownerAddress)
+                appendDisplayHistory(prefs, chosen.ownerAddress, chosen.toJson(), now, chosen.ownerAddress)
+                prefs.edit()
+                    .putLong(KEY_LAST_RUN_AT, now)
+                    .putString(KEY_LAST_RESULT, "success")
+                    .putString(KEY_LAST_MESSAGE, "設定 ${chosen.chain} ${chosen.name} / eth=$ethCount xtz=$xtzCount")
+                    .putString(KEY_CURRENT_RECORD, recordJson.toString())
+                    .putLong(KEY_CURRENT_RECORD_AT, now)
+                    .apply()
+                Log.d("WallpaperWorker", "壁紙設定成功 ${chosen.chain} ${chosen.name} total=${allNfts.size}")
+                return Result.success()
+            } catch (e: Exception) {
+                lastError = e
+                skipped.add(chosen.key())
+                Log.w("WallpaperWorker", "candidate failed ${chosen.chain} ${chosen.name}: ${e.message}")
+            }
+        }
+
+        saveResult(prefs, "error", lastError?.message ?: "全部候選失敗")
+        return Result.failure()
     }
 
     // ─── Internal NFT data class ─────────────────────────────────────────────
@@ -257,17 +305,17 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
             candidates = pool
         }
         val chosen = candidates[Random.nextInt(candidates.size)]
-        shownIds.add(chosen.key())
         return chosen
     }
 
-    private fun fetchEthereumNfts(address: String, apiKey: String, out: MutableList<NftInfo>) {
+    private fun fetchEthereumNfts(address: String, apiKey: String, out: MutableList<NftInfo>, deadline: Long) {
         try {
             var pageKey: String? = null
             var page = 0
             val maxPages = 25
+            val before = out.size
 
-            while (page < maxPages) {
+            while (page < maxPages && !budgetExceeded(deadline)) {
                 val url = buildString {
                     append("https://eth-mainnet.g.alchemy.com/nft/v2/$apiKey/getNFTs?owner=$address&withMetadata=true&pageSize=100")
                     if (!pageKey.isNullOrBlank()) {
@@ -313,20 +361,21 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                 pageKey = nextPageKey
                 page++
             }
-            Log.d("WallpaperWorker", "Ethereum NFTs fetched: ${out.size} from $address")
+            Log.d("WallpaperWorker", "Ethereum NFTs fetched: ${out.size - before} from $address")
         } catch (e: Exception) {
             Log.e("WallpaperWorker", "fetchEthereumNfts error: ${e.message}")
         }
     }
 
-    private fun fetchTezosNfts(address: String, out: MutableList<NftInfo>) {
+    private fun fetchTezosNfts(address: String, out: MutableList<NftInfo>, deadline: Long) {
         try {
             val pageSize = 100
             var offset = 0
             var page = 0
             val maxPages = 25
+            val before = out.size
 
-            while (page < maxPages) {
+            while (page < maxPages && !budgetExceeded(deadline)) {
                 val url =
                     "https://api.tzkt.io/v1/tokens/balances?account=$address&balance.gt=0&limit=$pageSize&offset=$offset&token.standard=fa2"
                 val json = httpGet(url) ?: break
@@ -365,7 +414,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                 offset += pageSize
                 page++
             }
-            Log.d("WallpaperWorker", "Tezos NFTs fetched: ${out.size} from $address")
+            Log.d("WallpaperWorker", "Tezos NFTs fetched: ${out.size - before} from $address")
         } catch (e: Exception) {
             Log.e("WallpaperWorker", "fetchTezosNfts error: ${e.message}")
         }
@@ -388,14 +437,34 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
     }
 
     private fun downloadImage(imageUrl: String): File {
+        val urls = linkedSetOf(imageUrl)
+        if (imageUrl.contains("/ipfs/")) {
+            val cidPath = imageUrl.substringAfter("/ipfs/")
+            urls.add("https://cloudflare-ipfs.com/ipfs/$cidPath")
+            urls.add("https://ipfs.io/ipfs/$cidPath")
+        }
+        var last: Exception? = null
+        for (url in urls) {
+            try {
+                return downloadImageOnce(url)
+            } catch (e: Exception) {
+                last = e
+                Log.w("WallpaperWorker", "download failed $url: ${e.message}")
+            }
+        }
+        throw last ?: Exception("download failed")
+    }
+
+    private fun downloadImageOnce(imageUrl: String): File {
         val conn = URL(imageUrl).openConnection() as HttpURLConnection
         conn.setRequestProperty("User-Agent", "NFTWallpaper/1.0")
-        conn.connectTimeout = 15000
-        conn.readTimeout = 30000
+        conn.connectTimeout = HTTP_CONNECT_MS
+        conn.readTimeout = HTTP_READ_MS
         conn.connect()
         if (conn.responseCode != 200) {
+            val code = conn.responseCode
             conn.disconnect()
-            throw Exception("HTTP ${conn.responseCode} downloading image")
+            throw Exception("HTTP $code downloading image")
         }
         val file = File(applicationContext.cacheDir, "wallpaper_temp.jpg")
         conn.inputStream.use { input ->
@@ -411,11 +480,17 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         return try {
             val conn = URL(urlStr).openConnection() as HttpURLConnection
             conn.setRequestProperty("User-Agent", "NFTWallpaper/1.0")
-            conn.connectTimeout = 15000
-            conn.readTimeout = 30000
+            conn.connectTimeout = HTTP_CONNECT_MS
+            conn.readTimeout = HTTP_READ_MS
             conn.connect()
-            if (conn.responseCode != 200) {
-                Log.e("WallpaperWorker", "HTTP ${conn.responseCode} for $urlStr")
+            val code = conn.responseCode
+            if (code == 429) {
+                conn.disconnect()
+                Thread.sleep(1500)
+                return httpGetRetry(urlStr)
+            }
+            if (code != 200) {
+                Log.e("WallpaperWorker", "HTTP $code for $urlStr")
                 conn.disconnect()
                 return null
             }
@@ -424,6 +499,27 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
             text
         } catch (e: Exception) {
             Log.e("WallpaperWorker", "httpGet error: ${e.message}")
+            null
+        }
+    }
+
+    private fun httpGetRetry(urlStr: String): String? {
+        return try {
+            val conn = URL(urlStr).openConnection() as HttpURLConnection
+            conn.setRequestProperty("User-Agent", "NFTWallpaper/1.0")
+            conn.connectTimeout = HTTP_CONNECT_MS
+            conn.readTimeout = HTTP_READ_MS
+            conn.connect()
+            if (conn.responseCode != 200) {
+                Log.e("WallpaperWorker", "HTTP ${conn.responseCode} retry for $urlStr")
+                conn.disconnect()
+                return null
+            }
+            val text = conn.inputStream.bufferedReader().readText()
+            conn.disconnect()
+            text
+        } catch (e: Exception) {
+            Log.e("WallpaperWorker", "httpGet retry error: ${e.message}")
             null
         }
     }

@@ -270,7 +270,8 @@ class WallpaperModule(reactContext: ReactApplicationContext) :
             }
             val setAt = if (entry.hasKey("setAt")) entry.getDouble("setAt").toLong()
                 else System.currentTimeMillis()
-            WallpaperWorker.appendDisplayHistory(prefs, address, nftJson, setAt)
+            val owner = if (entry.hasKey("address")) entry.getString("address") ?: address else address
+            WallpaperWorker.appendDisplayHistory(prefs, address, nftJson, setAt, owner)
             promise.resolve(null)
         } catch (e: Exception) {
             promise.reject("ERR_SYNC", e.message ?: "Unknown error", e)

@@ -43,6 +43,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         const val KEY_HISTORY_RESET_DATE_PREFIX = "history_reset_date_"
         const val MAX_DISPLAY_HISTORY = 200
         const val FETCH_BUDGET_MS = 7 * 60 * 1000L
+        const val AUTO_LIST_TTL_MS = 60 * 60 * 1000L
         const val HTTP_CONNECT_MS = 8000
         const val HTTP_READ_MS = 12000
         const val IMAGE_CONNECT_MS = 12000
@@ -200,17 +201,27 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         val allNfts = mutableListOf<NftInfo>()
 
         // 每個錢包均分時間，避免 ETH 先抓滿 10 分鐘導致 Tezos 完全沒進池
+        // 清單是 metadata JSON（不是縮圖）；1 小時內走檔案 cache，避免每 15 分鐘重打 TzKT 25 頁
         for (addr in addresses) {
             if (budgetExceeded()) {
                 Log.w("WallpaperWorker", "fetch budget exceeded before $addr, have ${allNfts.size}")
                 break
             }
+            val cached = readCachedNfts(addr)
+            if (cached != null) {
+                allNfts.addAll(cached)
+                val chain = cached.firstOrNull()?.chain ?: "?"
+                Log.i("WallpaperWorker", "NFT metadata cache $chain ${cached.size} from $addr")
+                continue
+            }
             val addrDeadline = minOf(workDeadline, System.currentTimeMillis() + perWalletMs)
+            val before = allNfts.size
             if (addr.startsWith("tz") || addr.startsWith("KT")) {
                 fetchTezosNfts(addr, allNfts, addrDeadline)
             } else if (!apiKey.isNullOrBlank()) {
                 fetchEthereumNfts(addr, apiKey, allNfts, addrDeadline)
             }
+            writeCachedNfts(addr, allNfts.subList(before, allNfts.size).toList())
         }
 
         val ethCount = allNfts.count { it.chain == "ethereum" }
@@ -309,6 +320,57 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
 
         fun key(): String = "$chain:$contractAddress-$tokenId"
         fun legacyKey(): String = "$contractAddress-$tokenId"
+        fun toCacheJson(): JSONObject = toJson().put("ownerAddress", ownerAddress)
+    }
+
+    private fun nftListCacheFile(address: String): File {
+        val safe = address.replace(Regex("[^a-zA-Z0-9]"), "_")
+        return File(applicationContext.cacheDir, "auto_nft_list_$safe.json")
+    }
+
+    private fun readCachedNfts(address: String): List<NftInfo>? {
+        return try {
+            val file = nftListCacheFile(address)
+            if (!file.exists()) return null
+            val obj = JSONObject(file.readText())
+            val ts = obj.optLong("ts", 0L)
+            if (System.currentTimeMillis() - ts > AUTO_LIST_TTL_MS) return null
+            val arr = obj.optJSONArray("items") ?: return null
+            (0 until arr.length()).mapNotNull { i ->
+                val n = arr.optJSONObject(i) ?: return@mapNotNull null
+                val image = n.optString("imageUrl", n.optString("wallpaperUrl", ""))
+                if (image.isBlank()) return@mapNotNull null
+                NftInfo(
+                    chain = n.optString("chain", ""),
+                    contractAddress = n.optString("contractAddress", ""),
+                    tokenId = n.optString("tokenId", ""),
+                    name = n.optString("name", ""),
+                    collectionName = n.optString("collectionName", ""),
+                    imageUrl = image,
+                    ownerAddress = n.optString("ownerAddress", address),
+                )
+            }.takeIf { it.isNotEmpty() }
+        } catch (e: Exception) {
+            Log.w("WallpaperWorker", "read cache failed $address: ${e.message}")
+            null
+        }
+    }
+
+    private fun writeCachedNfts(address: String, nfts: List<NftInfo>) {
+        if (nfts.isEmpty()) return
+        try {
+            val arr = JSONArray()
+            nfts.forEach { arr.put(it.toCacheJson()) }
+            val obj = JSONObject().apply {
+                put("ts", System.currentTimeMillis())
+                put("address", address)
+                put("items", arr)
+            }
+            nftListCacheFile(address).writeText(obj.toString())
+            Log.i("WallpaperWorker", "NFT metadata cached ${nfts.size} for $address")
+        } catch (e: Exception) {
+            Log.w("WallpaperWorker", "write cache failed $address: ${e.message}")
+        }
     }
 
     private fun pickRandomUnshown(
@@ -396,7 +458,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                 pageKey = nextPageKey
                 page++
             }
-            Log.i("WallpaperWorker", "Ethereum NFTs fetched: ${out.size - before} from $address")
+            Log.i("WallpaperWorker", "Ethereum NFT metadata fetched: ${out.size - before} from $address")
         } catch (e: Exception) {
             Log.e("WallpaperWorker", "fetchEthereumNfts error: ${e.message}")
         }
@@ -449,7 +511,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                 offset += pageSize
                 page++
             }
-            Log.i("WallpaperWorker", "Tezos NFTs fetched: ${out.size - before} from $address")
+            Log.i("WallpaperWorker", "Tezos NFT metadata fetched: ${out.size - before} from $address")
         } catch (e: Exception) {
             Log.e("WallpaperWorker", "fetchTezosNfts error: ${e.message}")
         }

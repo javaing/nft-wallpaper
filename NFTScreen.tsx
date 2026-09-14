@@ -35,6 +35,9 @@ import {
   type WallpaperInterval,
 } from './WallpaperManager';
 import { useTranslation } from 'react-i18next';
+import Constants from 'expo-constants';
+
+const APP_VERSION = Constants.nativeAppVersion ?? Constants.expoConfig?.version ?? '';
 
 const ALCHEMY_API_KEY = process.env.EXPO_PUBLIC_ALCHEMY_API_KEY ?? 'YOUR_ALCHEMY_API_KEY';
 const PAGE_SIZE = 20;
@@ -117,7 +120,8 @@ async function writeCachedPage(address: string, pageKey: string | undefined, pag
 }
 
 // ── 全部 NFT 清單 cache（auto-wallpaper 用）─────────────────────────────────
-type CachedAutoList = { items: NFTItem[]; ts: number };
+type CachedAutoList = { items: NFTItem[]; ts: number; complete?: boolean };
+const INCOMPLETE_AUTO_LIST_TTL_MS = 5 * 60 * 1000;
 const autoListMemoryCache = new Map<string, CachedAutoList>();
 
 function autoListStorageKey(address: string) {
@@ -375,29 +379,39 @@ function wallpaperCandidateUrls(nft: NFTItem): string[] {
 function pickRandomUnshown(
   nfts: NFTItem[],
   shownIds: string[],
-  ownerByKey: Map<string, string>
+  ownerByKey: Map<string, string>,
+  options?: { catalog?: NFTItem[]; allowReset?: boolean }
 ): { nft: NFTItem; nextShownIds: string[] } {
   const pool = nfts.filter(n => n.wallpaperUrl || n.imageUrl);
   if (pool.length === 0) throw new Error('no images');
-  if (pool.length === 1) {
-    const only = pool[0];
-    return { nft: only, nextShownIds: [...new Set([...shownIds, nftKey(only)])] };
-  }
+  const catalog = (options?.catalog ?? nfts).filter(n => n.wallpaperUrl || n.imageUrl);
+  const allowReset = options?.allowReset === true;
 
-  // 先均勻抽鏈（有進池的鏈各 50%），該鏈已抽完才重置該鏈，不讓 ETH 未展示把 Tezos 卡死
+  // 先均勻抽「還有未展示作品」的鏈；某鏈抽完就跳過。
+  // 只有完整清單都輪過才清空 shown_ids；清單不完整時寧可這輪不換，也不重複播。
   const chains = [...new Set(pool.map(n => n.chain))];
-  const chain = chains[Math.floor(Math.random() * chains.length)];
-  const chainPool = pool.filter(n => n.chain === chain);
-
   let ids = [...shownIds];
-  const shownSet = new Set(ids);
-  let chainCandidates = chainPool.filter(n => !shownSet.has(nftKey(n)) && !shownSet.has(legacyNftKey(n)));
-  if (chainCandidates.length === 0) {
-    const chainKeys = new Set(chainPool.flatMap(n => [nftKey(n), legacyNftKey(n)]));
-    ids = ids.filter(id => !chainKeys.has(id));
-    chainCandidates = chainPool;
-    console.log('[AutoWallpaper] chain cycle reset', chain, 'pool=', chainPool.length);
+  const isUnshown = (n: NFTItem, idSet: Set<string>) =>
+    !idSet.has(nftKey(n)) && !idSet.has(legacyNftKey(n));
+
+  let shownSet = new Set(ids);
+  let availableChains = chains.filter(c => pool.some(n => n.chain === c && isUnshown(n, shownSet)));
+  if (availableChains.length === 0) {
+    const catalogShown = catalog.length > 0 && catalog.every(n => !isUnshown(n, shownSet));
+    if (!allowReset || !catalogShown) {
+      throw new Error('no unshown');
+    }
+    const poolKeys = new Set(catalog.flatMap(n => [nftKey(n), legacyNftKey(n)]));
+    ids = ids.filter(id => !poolKeys.has(id));
+    shownSet = new Set(ids);
+    availableChains = [...new Set(catalog.map(n => n.chain))];
+    console.log('[AutoWallpaper] all works cycled, reset shown ids', 'catalog=', catalog.length);
   }
+
+  const pickPool = pool.some(n => isUnshown(n, shownSet)) ? pool : catalog;
+  const chain = availableChains[Math.floor(Math.random() * availableChains.length)];
+  const chainCandidates = pickPool.filter(n => n.chain === chain && isUnshown(n, shownSet));
+  if (chainCandidates.length === 0) throw new Error('no unshown');
 
   const byWallet = new Map<string, NFTItem[]>();
   for (const nft of chainCandidates) {
@@ -656,15 +670,18 @@ async function fetchEthPage(
 async function fetchAllNftsForAuto(
   address: string,
   options?: { forceRefresh?: boolean }
-): Promise<NFTItem[]> {
+): Promise<{ items: NFTItem[]; complete: boolean }> {
   const chain = detectChain(address);
-  if (!chain) return [];
+  if (!chain) return { items: [], complete: false };
 
   const force = options?.forceRefresh ?? false;
   if (!force) {
     const cached = await readCachedAutoList(address);
-    if (cached && Date.now() - cached.ts < AUTO_LIST_TTL_MS) {
-      return cached.items;
+    if (cached) {
+      const ttl = cached.complete ? AUTO_LIST_TTL_MS : INCOMPLETE_AUTO_LIST_TTL_MS;
+      if (Date.now() - cached.ts < ttl) {
+        return { items: cached.items, complete: cached.complete === true };
+      }
     }
     // stale 或無 cache：往下走網路抓
   }
@@ -673,9 +690,11 @@ async function fetchAllNftsForAuto(
   let pageKey: string | undefined = undefined;
   const MAX_PAGES = 25;
   const started = Date.now();
+  let complete = true;
 
   for (let page = 0; page < MAX_PAGES; page++) {
     if (Date.now() - started > AUTO_FETCH_BUDGET_MS) {
+      complete = false;
       console.warn('[AutoWallpaper] fetch budget exceeded for', address, `pages=${page} items=${items.length}`);
       break;
     }
@@ -685,7 +704,9 @@ async function fetchAllNftsForAuto(
       items.push(...result.items);
       if (!result.nextPageKey) break;
       pageKey = result.nextPageKey;
+      if (page === MAX_PAGES - 1) complete = false;
     } catch (e: any) {
+      complete = false;
       console.warn('[AutoWallpaper] page failed, use partial', address, e?.message);
       break;
     }
@@ -693,42 +714,46 @@ async function fetchAllNftsForAuto(
 
   // 抓失敗（空陣列）不寫 cache，避免把空清單卡進來
   if (items.length > 0) {
-    await writeCachedAutoList(address, { items, ts: Date.now() });
+    await writeCachedAutoList(address, { items, ts: Date.now(), complete });
   }
-  return items;
+  return { items, complete };
 }
 
 async function collectAutoPool(wallets: string[]): Promise<{
   nfts: NFTItem[];
   ownerByKey: Map<string, string>;
+  complete: boolean;
 }> {
   const nfts: NFTItem[] = [];
   const ownerByKey = new Map<string, string>();
+  let complete = wallets.length > 0;
   // 逐錢包抓：避免兩個 Tezos 平行打 TzKT 被 429，也避免一錢包失敗讓 Promise.all 整池清空
   for (const wallet of wallets) {
     try {
-      const items = await fetchAllNftsForAuto(wallet);
-      const withImg = items.filter(n => n.wallpaperUrl || n.imageUrl).length;
+      const fetched = await fetchAllNftsForAuto(wallet);
+      if (!fetched.complete) complete = false;
+      const withImg = fetched.items.filter(n => n.wallpaperUrl || n.imageUrl).length;
       console.log(
         '[AutoWallpaper] fetched',
         detectChain(wallet),
         `${wallet.slice(0, 6)}…${wallet.slice(-4)}`,
-        `total=${items.length} img=${withImg}`
+        `total=${fetched.items.length} img=${withImg} complete=${fetched.complete}`
       );
-      for (const nft of items) {
+      for (const nft of fetched.items) {
         const key = nftKey(nft);
         if (ownerByKey.has(key)) continue;
         nfts.push(nft);
         ownerByKey.set(key, wallet);
       }
     } catch (e: any) {
+      complete = false;
       console.warn('[AutoWallpaper] skip wallet', detectChain(wallet), wallet.slice(0, 10), e?.message);
     }
   }
   const eth = nfts.filter(n => n.chain === 'ethereum').length;
   const xtz = nfts.filter(n => n.chain === 'tezos').length;
-  console.log(`[AutoWallpaper] collect done eth=${eth} xtz=${xtz} wallets=${wallets.length}`);
-  return { nfts, ownerByKey };
+  console.log(`[AutoWallpaper] collect done eth=${eth} xtz=${xtz} wallets=${wallets.length} complete=${complete}`);
+  return { nfts, ownerByKey, complete };
 }
 
 async function setAsWallpaper(
@@ -960,7 +985,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
         // 後續 effect / JS reload 讀到新 lastTs 就會 skip
         await AsyncStorage.setItem(STORAGE_KEY_AUTO_LAST_TS, String(now));
 
-        const { nfts: autoNfts, ownerByKey } = await collectAutoPool(wallets);
+        const { nfts: autoNfts, ownerByKey, complete: catalogComplete } = await collectAutoPool(wallets);
         if (autoNfts.length === 0) {
           console.warn('[AutoWallpaper] 找不到可用 NFT（auto list empty）');
           await AsyncStorage.setItem(STORAGE_KEY_AUTO_LAST_TS, String(now - INTERVAL_MS[interval] + 60 * 1000));
@@ -976,7 +1001,20 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
         for (let attempt = 0; attempt < 12; attempt++) {
           const pool = autoNfts.filter(n => !skipped.has(nftKey(n)));
           if (pool.length === 0) break;
-          const { nft, nextShownIds } = pickRandomUnshown(pool, shownIds, ownerByKey);
+          let nft: NFTItem;
+          let nextShownIds: string[];
+          try {
+            ({ nft, nextShownIds } = pickRandomUnshown(pool, shownIds, ownerByKey, {
+              catalog: autoNfts,
+              allowReset: catalogComplete,
+            }));
+          } catch (e: any) {
+            if (e?.message === 'no unshown') {
+              console.warn('[AutoWallpaper] 未展示已用完且清單未抓齊，本輪不重播');
+              break;
+            }
+            throw e;
+          }
           const targetUrl = nft?.wallpaperUrl || nft?.imageUrl;
           if (!targetUrl) {
             skipped.add(nftKey(nft));
@@ -1302,7 +1340,10 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>{t('my_nfts')}</Text>
+        <Text style={styles.headerTitle}>
+          {t('my_nfts')}
+          {APP_VERSION ? <Text style={styles.headerVersion}> {APP_VERSION}</Text> : null}
+        </Text>
         <View style={{ flex: 1 }} />
         <TouchableOpacity onPress={refreshList} style={styles.refreshBtn} disabled={loading}>
           <Text style={[styles.refreshText, loading && { opacity: 0.4 }]}>↻</Text>
@@ -1727,6 +1768,7 @@ const styles = StyleSheet.create({
   backBtn: { padding: 8 },
   backText: { color: '#a78bfa', fontSize: 16 },
   headerTitle: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  headerVersion: { color: '#9ca3af', fontSize: 14, fontWeight: '500' },
   refreshBtn: { padding: 8 },
   walletSection: { backgroundColor: '#111827' },
   walletRow: { paddingTop: 6, flexDirection: 'row', alignItems: 'center' },

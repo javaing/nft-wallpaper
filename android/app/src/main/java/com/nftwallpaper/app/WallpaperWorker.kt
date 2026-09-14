@@ -202,31 +202,37 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
 
         // 每個錢包均分時間，避免 ETH 先抓滿 10 分鐘導致 Tezos 完全沒進池
         // 清單是 metadata JSON（不是縮圖）；1 小時內走檔案 cache，避免每 15 分鐘重打 TzKT 25 頁
+        var catalogComplete = true
         for (addr in addresses) {
             if (budgetExceeded()) {
+                catalogComplete = false
                 Log.w("WallpaperWorker", "fetch budget exceeded before $addr, have ${allNfts.size}")
                 break
             }
             val cached = readCachedNfts(addr)
             if (cached != null) {
-                allNfts.addAll(cached)
-                val chain = cached.firstOrNull()?.chain ?: "?"
-                Log.i("WallpaperWorker", "NFT metadata cache $chain ${cached.size} from $addr")
+                allNfts.addAll(cached.items)
+                if (!cached.complete) catalogComplete = false
+                val chain = cached.items.firstOrNull()?.chain ?: "?"
+                Log.i("WallpaperWorker", "NFT metadata cache $chain ${cached.items.size} complete=${cached.complete} from $addr")
                 continue
             }
             val addrDeadline = minOf(workDeadline, System.currentTimeMillis() + perWalletMs)
             val before = allNfts.size
-            if (addr.startsWith("tz") || addr.startsWith("KT")) {
+            val walletComplete = if (addr.startsWith("tz") || addr.startsWith("KT")) {
                 fetchTezosNfts(addr, allNfts, addrDeadline)
             } else if (!apiKey.isNullOrBlank()) {
                 fetchEthereumNfts(addr, apiKey, allNfts, addrDeadline)
+            } else {
+                false
             }
-            writeCachedNfts(addr, allNfts.subList(before, allNfts.size).toList())
+            if (!walletComplete) catalogComplete = false
+            writeCachedNfts(addr, allNfts.subList(before, allNfts.size).toList(), walletComplete)
         }
 
         val ethCount = allNfts.count { it.chain == "ethereum" }
         val xtzCount = allNfts.count { it.chain == "tezos" }
-        Log.i("WallpaperWorker", "pool eth=$ethCount xtz=$xtzCount total=${allNfts.size} wallets=${addresses.size}")
+        Log.i("WallpaperWorker", "pool eth=$ethCount xtz=$xtzCount total=${allNfts.size} wallets=${addresses.size} complete=$catalogComplete")
         for (addr in addresses) {
             val n = allNfts.count { it.ownerAddress == addr }
             val chain = allNfts.firstOrNull { it.ownerAddress == addr }?.chain
@@ -255,9 +261,14 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
             val remaining = allNfts.filter { !skipped.contains(it.key()) && !skipped.contains(it.legacyKey()) }
             if (remaining.isEmpty()) return@repeat
             val chosen = try {
-                pickRandomUnshown(remaining, shownIds)
+                pickRandomUnshown(remaining, allNfts, shownIds, catalogComplete)
             } catch (e: Exception) {
                 lastError = e
+                if (e.message == "no unshown") {
+                    Log.i("WallpaperWorker", "未展示已用完且清單未抓齊，本輪不重播")
+                    saveResult(prefs, "success", "skip, no unshown without full catalog reset")
+                    return Result.success()
+                }
                 return@repeat
             }
             try {
@@ -323,20 +334,24 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         fun toCacheJson(): JSONObject = toJson().put("ownerAddress", ownerAddress)
     }
 
+    private data class CachedNftList(val items: List<NftInfo>, val complete: Boolean)
+
     private fun nftListCacheFile(address: String): File {
         val safe = address.replace(Regex("[^a-zA-Z0-9]"), "_")
         return File(applicationContext.cacheDir, "auto_nft_list_$safe.json")
     }
 
-    private fun readCachedNfts(address: String): List<NftInfo>? {
+    private fun readCachedNfts(address: String): CachedNftList? {
         return try {
             val file = nftListCacheFile(address)
             if (!file.exists()) return null
             val obj = JSONObject(file.readText())
             val ts = obj.optLong("ts", 0L)
-            if (System.currentTimeMillis() - ts > AUTO_LIST_TTL_MS) return null
+            val complete = obj.optBoolean("complete", false)
+            val ttl = if (complete) AUTO_LIST_TTL_MS else 5 * 60 * 1000L
+            if (System.currentTimeMillis() - ts > ttl) return null
             val arr = obj.optJSONArray("items") ?: return null
-            (0 until arr.length()).mapNotNull { i ->
+            val items = (0 until arr.length()).mapNotNull { i ->
                 val n = arr.optJSONObject(i) ?: return@mapNotNull null
                 val image = n.optString("imageUrl", n.optString("wallpaperUrl", ""))
                 if (image.isBlank()) return@mapNotNull null
@@ -349,14 +364,15 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                     imageUrl = image,
                     ownerAddress = n.optString("ownerAddress", address),
                 )
-            }.takeIf { it.isNotEmpty() }
+            }
+            items.takeIf { it.isNotEmpty() }?.let { CachedNftList(it, complete) }
         } catch (e: Exception) {
             Log.w("WallpaperWorker", "read cache failed $address: ${e.message}")
             null
         }
     }
 
-    private fun writeCachedNfts(address: String, nfts: List<NftInfo>) {
+    private fun writeCachedNfts(address: String, nfts: List<NftInfo>, complete: Boolean) {
         if (nfts.isEmpty()) return
         try {
             val arr = JSONArray()
@@ -364,33 +380,47 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
             val obj = JSONObject().apply {
                 put("ts", System.currentTimeMillis())
                 put("address", address)
+                put("complete", complete)
                 put("items", arr)
             }
             nftListCacheFile(address).writeText(obj.toString())
-            Log.i("WallpaperWorker", "NFT metadata cached ${nfts.size} for $address")
+            Log.i("WallpaperWorker", "NFT metadata cached ${nfts.size} complete=$complete for $address")
         } catch (e: Exception) {
             Log.w("WallpaperWorker", "write cache failed $address: ${e.message}")
         }
     }
 
     private fun pickRandomUnshown(
-        allNfts: List<NftInfo>,
-        shownIds: MutableSet<String>
+        candidates: List<NftInfo>,
+        catalog: List<NftInfo>,
+        shownIds: MutableSet<String>,
+        allowReset: Boolean
     ): NftInfo {
-        val pool = allNfts.filter { it.imageUrl.isNotBlank() }
+        val pool = candidates.filter { it.imageUrl.isNotBlank() }
         require(pool.isNotEmpty()) { "無可用 NFT 圖片" }
+        val full = catalog.filter { it.imageUrl.isNotBlank() }
 
-        val chains = pool.map { it.chain }.distinct()
-        val chain = chains[Random.nextInt(chains.size)]
-        val chainPool = pool.filter { it.chain == chain }
+        fun isUnshown(nft: NftInfo) =
+            !shownIds.contains(nft.key()) && !shownIds.contains(nft.legacyKey())
 
-        var chainCandidates = chainPool.filter { !shownIds.contains(it.key()) && !shownIds.contains(it.legacyKey()) }
-        if (chainCandidates.isEmpty()) {
-            val chainKeys = chainPool.flatMap { listOf(it.key(), it.legacyKey()) }.toSet()
-            shownIds.removeAll(chainKeys)
-            chainCandidates = chainPool
-            Log.i("WallpaperWorker", "chain cycle reset $chain pool=${chainPool.size}")
+        var availableChains = pool.map { it.chain }.distinct().filter { c ->
+            pool.any { it.chain == c && isUnshown(it) }
         }
+        if (availableChains.isEmpty()) {
+            val catalogShown = full.isNotEmpty() && full.all { !isUnshown(it) }
+            if (!allowReset || !catalogShown) {
+                error("no unshown")
+            }
+            val poolKeys = full.flatMap { listOf(it.key(), it.legacyKey()) }.toSet()
+            shownIds.removeAll(poolKeys)
+            availableChains = full.map { it.chain }.distinct()
+            Log.i("WallpaperWorker", "all works cycled, reset shown ids catalog=${full.size}")
+        }
+
+        val pickPool = if (pool.any { isUnshown(it) }) pool else full
+        val chain = availableChains[Random.nextInt(availableChains.size)]
+        val chainCandidates = pickPool.filter { it.chain == chain && isUnshown(it) }
+        require(chainCandidates.isNotEmpty()) { "no unshown" }
 
         val byWallet = chainCandidates.groupBy { it.ownerAddress }
         val wallets = byWallet.keys.toList()
@@ -399,13 +429,14 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         val chosen = walletNfts[Random.nextInt(walletNfts.size)]
         Log.i(
             "WallpaperWorker",
-            "pick chain=$chain/${chains.joinToString("+")} wallet=${wallet.take(8)}… " +
+            "pick chain=$chain/${availableChains.joinToString("+")} wallet=${wallet.take(8)}… " +
                 "name=${chosen.name} chainUnshown=${chainCandidates.size} walletN=${walletNfts.size}"
         )
         return chosen
     }
 
-    private fun fetchEthereumNfts(address: String, apiKey: String, out: MutableList<NftInfo>, deadline: Long) {
+    private fun fetchEthereumNfts(address: String, apiKey: String, out: MutableList<NftInfo>, deadline: Long): Boolean {
+        var complete = true
         try {
             var pageKey: String? = null
             var page = 0
@@ -420,9 +451,17 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                         append(pageKey)
                     }
                 }
-                val json = httpGet(url) ?: break
+                val json = httpGet(url)
+                if (json == null) {
+                    complete = false
+                    break
+                }
                 val obj = JSONObject(json)
-                val nfts = obj.optJSONArray("ownedNfts") ?: break
+                val nfts = obj.optJSONArray("ownedNfts")
+                if (nfts == null) {
+                    complete = false
+                    break
+                }
                 for (i in 0 until nfts.length()) {
                     val nft = nfts.getJSONObject(i)
                     val mediaArr = nft.optJSONArray("media")
@@ -454,17 +493,24 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                     )
                 }
                 val nextPageKey = obj.optString("pageKey", "")
-                if (nextPageKey.isBlank()) break
+                if (nextPageKey.isBlank()) {
+                    Log.i("WallpaperWorker", "Ethereum NFT metadata fetched: ${out.size - before} from $address complete=true")
+                    return true
+                }
                 pageKey = nextPageKey
                 page++
             }
-            Log.i("WallpaperWorker", "Ethereum NFT metadata fetched: ${out.size - before} from $address")
+            complete = false
+            Log.i("WallpaperWorker", "Ethereum NFT metadata fetched: ${out.size - before} from $address complete=false")
         } catch (e: Exception) {
+            complete = false
             Log.e("WallpaperWorker", "fetchEthereumNfts error: ${e.message}")
         }
+        return complete
     }
 
-    private fun fetchTezosNfts(address: String, out: MutableList<NftInfo>, deadline: Long) {
+    private fun fetchTezosNfts(address: String, out: MutableList<NftInfo>, deadline: Long): Boolean {
+        var complete = false
         try {
             val pageSize = 100
             var offset = 0
@@ -507,14 +553,18 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                         )
                     )
                 }
-                if (arr.length() < pageSize) break
+                if (arr.length() < pageSize) {
+                    complete = true
+                    break
+                }
                 offset += pageSize
                 page++
             }
-            Log.i("WallpaperWorker", "Tezos NFT metadata fetched: ${out.size - before} from $address")
+            Log.i("WallpaperWorker", "Tezos NFT metadata fetched: ${out.size - before} from $address complete=$complete")
         } catch (e: Exception) {
             Log.e("WallpaperWorker", "fetchTezosNfts error: ${e.message}")
         }
+        return complete
     }
 
     private fun hexToDecimalSafe(hex: String): String {

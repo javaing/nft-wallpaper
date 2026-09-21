@@ -197,48 +197,9 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         }
 
         workDeadline = System.currentTimeMillis() + FETCH_BUDGET_MS
-        val perWalletMs = FETCH_BUDGET_MS / addresses.size
-        val allNfts = mutableListOf<NftInfo>()
-
-        // 每個錢包均分時間，避免 ETH 先抓滿 10 分鐘導致 Tezos 完全沒進池
-        // 清單是 metadata JSON（不是縮圖）；1 小時內走檔案 cache，避免每 15 分鐘重打 TzKT 25 頁
-        var catalogComplete = true
-        for (addr in addresses) {
-            if (budgetExceeded()) {
-                catalogComplete = false
-                Log.w("WallpaperWorker", "fetch budget exceeded before $addr, have ${allNfts.size}")
-                break
-            }
-            val cached = readCachedNfts(addr)
-            if (cached != null) {
-                allNfts.addAll(cached.items)
-                if (!cached.complete) catalogComplete = false
-                val chain = cached.items.firstOrNull()?.chain ?: "?"
-                Log.i("WallpaperWorker", "NFT metadata cache $chain ${cached.items.size} complete=${cached.complete} from $addr")
-                continue
-            }
-            val addrDeadline = minOf(workDeadline, System.currentTimeMillis() + perWalletMs)
-            val before = allNfts.size
-            val walletComplete = if (addr.startsWith("tz") || addr.startsWith("KT")) {
-                fetchTezosNfts(addr, allNfts, addrDeadline)
-            } else if (!apiKey.isNullOrBlank()) {
-                fetchEthereumNfts(addr, apiKey, allNfts, addrDeadline)
-            } else {
-                false
-            }
-            if (!walletComplete) catalogComplete = false
-            writeCachedNfts(addr, allNfts.subList(before, allNfts.size).toList(), walletComplete)
-        }
-
-        val ethCount = allNfts.count { it.chain == "ethereum" }
-        val xtzCount = allNfts.count { it.chain == "tezos" }
-        Log.i("WallpaperWorker", "pool eth=$ethCount xtz=$xtzCount total=${allNfts.size} wallets=${addresses.size} complete=$catalogComplete")
-        for (addr in addresses) {
-            val n = allNfts.count { it.ownerAddress == addr }
-            val chain = allNfts.firstOrNull { it.ownerAddress == addr }?.chain
-                ?: if (addr.startsWith("tz") || addr.startsWith("KT")) "tezos" else "ethereum"
-            Log.i("WallpaperWorker", "  $chain ${addr.take(6)}…${addr.takeLast(4)} count=$n")
-        }
+        var pool = collectPool(addresses, apiKey, ignoreCache = false)
+        var allNfts = pool.items
+        var catalogComplete = pool.complete
 
         if (allNfts.isEmpty()) {
             saveResult(prefs, "error", "無 NFT 可設定")
@@ -257,17 +218,37 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
 
         val skipped = mutableSetOf<String>()
         var lastError: Exception? = null
+        var didForceRefresh = false
+        var allowRepeatFallback = false
+        var ethCount = allNfts.count { it.chain == "ethereum" }
+        var xtzCount = allNfts.count { it.chain == "tezos" }
         repeat(12) {
             val remaining = allNfts.filter { !skipped.contains(it.key()) && !skipped.contains(it.legacyKey()) }
             if (remaining.isEmpty()) return@repeat
             val chosen = try {
-                pickRandomUnshown(remaining, allNfts, shownIds, catalogComplete)
+                pickRandomUnshown(remaining, allNfts, shownIds, catalogComplete, allowRepeatFallback)
             } catch (e: Exception) {
                 lastError = e
                 if (e.message == "no unshown") {
-                    Log.i("WallpaperWorker", "未展示已用完且清單未抓齊，本輪不重播")
-                    saveResult(prefs, "success", "skip, no unshown without full catalog reset")
-                    return Result.success()
+                    if (!didForceRefresh && !catalogComplete) {
+                        didForceRefresh = true
+                        Log.w("WallpaperWorker", "未展示用完，強制重抓清單")
+                        workDeadline = System.currentTimeMillis() + FETCH_BUDGET_MS
+                        pool = collectPool(addresses, apiKey, ignoreCache = true)
+                        allNfts = pool.items
+                        catalogComplete = pool.complete
+                        ethCount = allNfts.count { it.chain == "ethereum" }
+                        xtzCount = allNfts.count { it.chain == "tezos" }
+                        return@repeat
+                    }
+                    if (!allowRepeatFallback) {
+                        allowRepeatFallback = true
+                        Log.w("WallpaperWorker", "清單未抓齊，改從現有 pool 重抽以免停輪播")
+                        return@repeat
+                    }
+                    Log.i("WallpaperWorker", "未展示已用完且無法重抽")
+                    saveResult(prefs, "error", "skip, no unshown")
+                    return Result.failure()
                 }
                 return@repeat
             }
@@ -390,11 +371,59 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         }
     }
 
+    private data class NftPool(val items: MutableList<NftInfo>, val complete: Boolean)
+
+    private fun collectPool(addresses: List<String>, apiKey: String?, ignoreCache: Boolean): NftPool {
+        val perWalletMs = FETCH_BUDGET_MS / addresses.size.coerceAtLeast(1)
+        val allNfts = mutableListOf<NftInfo>()
+        var catalogComplete = true
+        for (addr in addresses) {
+            if (budgetExceeded()) {
+                catalogComplete = false
+                Log.w("WallpaperWorker", "fetch budget exceeded before $addr, have ${allNfts.size}")
+                break
+            }
+            if (!ignoreCache) {
+                val cached = readCachedNfts(addr)
+                if (cached != null) {
+                    allNfts.addAll(cached.items)
+                    if (!cached.complete) catalogComplete = false
+                    val chain = cached.items.firstOrNull()?.chain ?: "?"
+                    Log.i("WallpaperWorker", "NFT metadata cache $chain ${cached.items.size} complete=${cached.complete} from $addr")
+                    continue
+                }
+            }
+            val addrDeadline = minOf(workDeadline, System.currentTimeMillis() + perWalletMs)
+            val before = allNfts.size
+            val walletComplete = if (addr.startsWith("tz") || addr.startsWith("KT")) {
+                fetchTezosNfts(addr, allNfts, addrDeadline)
+            } else if (!apiKey.isNullOrBlank()) {
+                fetchEthereumNfts(addr, apiKey, allNfts, addrDeadline)
+            } else {
+                false
+            }
+            if (!walletComplete) catalogComplete = false
+            writeCachedNfts(addr, allNfts.subList(before, allNfts.size).toList(), walletComplete)
+        }
+
+        val ethCount = allNfts.count { it.chain == "ethereum" }
+        val xtzCount = allNfts.count { it.chain == "tezos" }
+        Log.i("WallpaperWorker", "pool eth=$ethCount xtz=$xtzCount total=${allNfts.size} wallets=${addresses.size} complete=$catalogComplete ignoreCache=$ignoreCache")
+        for (addr in addresses) {
+            val n = allNfts.count { it.ownerAddress == addr }
+            val chain = allNfts.firstOrNull { it.ownerAddress == addr }?.chain
+                ?: if (addr.startsWith("tz") || addr.startsWith("KT")) "tezos" else "ethereum"
+            Log.i("WallpaperWorker", "  $chain ${addr.take(6)}…${addr.takeLast(4)} count=$n")
+        }
+        return NftPool(allNfts, catalogComplete)
+    }
+
     private fun pickRandomUnshown(
         candidates: List<NftInfo>,
         catalog: List<NftInfo>,
         shownIds: MutableSet<String>,
-        allowReset: Boolean
+        allowReset: Boolean,
+        allowRepeatFallback: Boolean
     ): NftInfo {
         val pool = candidates.filter { it.imageUrl.isNotBlank() }
         require(pool.isNotEmpty()) { "無可用 NFT 圖片" }
@@ -403,34 +432,27 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         fun isUnshown(nft: NftInfo) =
             !shownIds.contains(nft.key()) && !shownIds.contains(nft.legacyKey())
 
-        var availableChains = pool.map { it.chain }.distinct().filter { c ->
-            pool.any { it.chain == c && isUnshown(it) }
-        }
-        if (availableChains.isEmpty()) {
+        var pickPool = pool.filter { isUnshown(it) }
+        if (pickPool.isEmpty()) {
             val catalogShown = full.isNotEmpty() && full.all { !isUnshown(it) }
-            if (!allowReset || !catalogShown) {
+            if (allowReset && catalogShown) {
+                val poolKeys = full.flatMap { listOf(it.key(), it.legacyKey()) }.toSet()
+                shownIds.removeAll(poolKeys)
+                pickPool = full.filter { isUnshown(it) }
+                Log.i("WallpaperWorker", "all works cycled, reset shown ids catalog=${full.size}")
+            } else if (allowRepeatFallback) {
+                pickPool = pool
+                Log.i("WallpaperWorker", "incomplete catalog, repeat from pool size=${pool.size}")
+            } else {
                 error("no unshown")
             }
-            val poolKeys = full.flatMap { listOf(it.key(), it.legacyKey()) }.toSet()
-            shownIds.removeAll(poolKeys)
-            availableChains = full.map { it.chain }.distinct()
-            Log.i("WallpaperWorker", "all works cycled, reset shown ids catalog=${full.size}")
         }
+        require(pickPool.isNotEmpty()) { "no unshown" }
 
-        val pickPool = if (pool.any { isUnshown(it) }) pool else full
-        val chain = availableChains[Random.nextInt(availableChains.size)]
-        val chainCandidates = pickPool.filter { it.chain == chain && isUnshown(it) }
-        require(chainCandidates.isNotEmpty()) { "no unshown" }
-
-        val byWallet = chainCandidates.groupBy { it.ownerAddress }
-        val wallets = byWallet.keys.toList()
-        val wallet = wallets[Random.nextInt(wallets.size)]
-        val walletNfts = byWallet.getValue(wallet)
-        val chosen = walletNfts[Random.nextInt(walletNfts.size)]
+        val chosen = pickPool[Random.nextInt(pickPool.size)]
         Log.i(
             "WallpaperWorker",
-            "pick chain=$chain/${availableChains.joinToString("+")} wallet=${wallet.take(8)}… " +
-                "name=${chosen.name} chainUnshown=${chainCandidates.size} walletN=${walletNfts.size}"
+            "pick chain=${chosen.chain} name=${chosen.name} unshown=${pickPool.size}/${full.size}"
         )
         return chosen
     }

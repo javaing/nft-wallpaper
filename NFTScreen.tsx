@@ -379,57 +379,45 @@ function wallpaperCandidateUrls(nft: NFTItem): string[] {
 function pickRandomUnshown(
   nfts: NFTItem[],
   shownIds: string[],
-  ownerByKey: Map<string, string>,
-  options?: { catalog?: NFTItem[]; allowReset?: boolean }
+  _ownerByKey: Map<string, string>,
+  options?: { catalog?: NFTItem[]; allowReset?: boolean; allowRepeatFallback?: boolean }
 ): { nft: NFTItem; nextShownIds: string[] } {
   const pool = nfts.filter(n => n.wallpaperUrl || n.imageUrl);
   if (pool.length === 0) throw new Error('no images');
   const catalog = (options?.catalog ?? nfts).filter(n => n.wallpaperUrl || n.imageUrl);
   const allowReset = options?.allowReset === true;
+  const allowRepeatFallback = options?.allowRepeatFallback === true;
 
-  // 先均勻抽「還有未展示作品」的鏈；某鏈抽完就跳過。
-  // 只有完整清單都輪過才清空 shown_ids；清單不完整時寧可這輪不換，也不重複播。
-  const chains = [...new Set(pool.map(n => n.chain))];
   let ids = [...shownIds];
   const isUnshown = (n: NFTItem, idSet: Set<string>) =>
     !idSet.has(nftKey(n)) && !idSet.has(legacyNftKey(n));
 
   let shownSet = new Set(ids);
-  let availableChains = chains.filter(c => pool.some(n => n.chain === c && isUnshown(n, shownSet)));
-  if (availableChains.length === 0) {
+  let candidates = pool.filter(n => isUnshown(n, shownSet));
+  if (candidates.length === 0) {
     const catalogShown = catalog.length > 0 && catalog.every(n => !isUnshown(n, shownSet));
-    if (!allowReset || !catalogShown) {
+    if (allowReset && catalogShown) {
+      const poolKeys = new Set(catalog.flatMap(n => [nftKey(n), legacyNftKey(n)]));
+      ids = ids.filter(id => !poolKeys.has(id));
+      shownSet = new Set(ids);
+      candidates = catalog.filter(n => isUnshown(n, shownSet));
+      console.log('[AutoWallpaper] all works cycled, reset shown ids', 'catalog=', catalog.length);
+    } else if (allowRepeatFallback) {
+      // 清單抓不齊時不要停輪播：先重抽已看過的，shown_ids 保留，之後新抓到的仍優先
+      candidates = pool;
+      console.log('[AutoWallpaper] incomplete catalog, repeat from pool', 'pool=', pool.length);
+    } else {
       throw new Error('no unshown');
     }
-    const poolKeys = new Set(catalog.flatMap(n => [nftKey(n), legacyNftKey(n)]));
-    ids = ids.filter(id => !poolKeys.has(id));
-    shownSet = new Set(ids);
-    availableChains = [...new Set(catalog.map(n => n.chain))];
-    console.log('[AutoWallpaper] all works cycled, reset shown ids', 'catalog=', catalog.length);
   }
+  if (candidates.length === 0) throw new Error('no unshown');
 
-  const pickPool = pool.some(n => isUnshown(n, shownSet)) ? pool : catalog;
-  const chain = availableChains[Math.floor(Math.random() * availableChains.length)];
-  const chainCandidates = pickPool.filter(n => n.chain === chain && isUnshown(n, shownSet));
-  if (chainCandidates.length === 0) throw new Error('no unshown');
-
-  const byWallet = new Map<string, NFTItem[]>();
-  for (const nft of chainCandidates) {
-    const owner = ownerByKey.get(nftKey(nft)) ?? chain;
-    const list = byWallet.get(owner) ?? [];
-    list.push(nft);
-    byWallet.set(owner, list);
-  }
-  const walletKeys = [...byWallet.keys()];
-  const wallet = walletKeys[Math.floor(Math.random() * walletKeys.length)];
-  const walletNfts = byWallet.get(wallet)!;
-  const nft = walletNfts[Math.floor(Math.random() * walletNfts.length)];
+  const nft = candidates[Math.floor(Math.random() * candidates.length)];
   console.log(
     '[AutoWallpaper] pick',
-    `chain=${chain}/${chains.join('+')}`,
-    `wallet=${wallet.slice(0, 8)}… (${walletKeys.length} on chain)`,
+    `chain=${nft.chain}`,
     `name=${nft.name}`,
-    `chainUnshown=${chainCandidates.length} walletN=${walletNfts.length}`
+    `unshown=${candidates.length}/${catalog.length}`
   );
   return { nft, nextShownIds: [...ids, nftKey(nft)] };
 }
@@ -719,7 +707,10 @@ async function fetchAllNftsForAuto(
   return { items, complete };
 }
 
-async function collectAutoPool(wallets: string[]): Promise<{
+async function collectAutoPool(
+  wallets: string[],
+  options?: { forceRefresh?: boolean }
+): Promise<{
   nfts: NFTItem[];
   ownerByKey: Map<string, string>;
   complete: boolean;
@@ -730,7 +721,7 @@ async function collectAutoPool(wallets: string[]): Promise<{
   // 逐錢包抓：避免兩個 Tezos 平行打 TzKT 被 429，也避免一錢包失敗讓 Promise.all 整池清空
   for (const wallet of wallets) {
     try {
-      const fetched = await fetchAllNftsForAuto(wallet);
+      const fetched = await fetchAllNftsForAuto(wallet, options);
       if (!fetched.complete) complete = false;
       const withImg = fetched.items.filter(n => n.wallpaperUrl || n.imageUrl).length;
       console.log(
@@ -959,7 +950,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
 
   // 自動換桌布：NFT 載入完成或週期檢查時觸發
   useEffect(() => {
-    if (!autoEnabled || loading) return;
+    if (!autoEnabled || loading || !settingsLoaded) return;
     // Lock: 避免同一 JS context 內多次平行觸發（mount 多次 / deps 連續變動）
     if (autoWallpaperBusy.current) return;
     autoWallpaperBusy.current = true;
@@ -985,7 +976,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
         // 後續 effect / JS reload 讀到新 lastTs 就會 skip
         await AsyncStorage.setItem(STORAGE_KEY_AUTO_LAST_TS, String(now));
 
-        const { nfts: autoNfts, ownerByKey, complete: catalogComplete } = await collectAutoPool(wallets);
+        let { nfts: autoNfts, ownerByKey, complete: catalogComplete } = await collectAutoPool(wallets);
         if (autoNfts.length === 0) {
           console.warn('[AutoWallpaper] 找不到可用 NFT（auto list empty）');
           await AsyncStorage.setItem(STORAGE_KEY_AUTO_LAST_TS, String(now - INTERVAL_MS[interval] + 60 * 1000));
@@ -996,6 +987,8 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
         const skipped = new Set<string>();
         let applied = false;
         let lastError: string | undefined;
+        let didForceRefresh = false;
+        let allowRepeatFallback = false;
         logPoolBreakdown(autoNfts, ownerByKey, shownIds, skipped);
 
         for (let attempt = 0; attempt < 12; attempt++) {
@@ -1007,10 +1000,25 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
             ({ nft, nextShownIds } = pickRandomUnshown(pool, shownIds, ownerByKey, {
               catalog: autoNfts,
               allowReset: catalogComplete,
+              allowRepeatFallback,
             }));
           } catch (e: any) {
             if (e?.message === 'no unshown') {
-              console.warn('[AutoWallpaper] 未展示已用完且清單未抓齊，本輪不重播');
+              if (!didForceRefresh && !catalogComplete) {
+                didForceRefresh = true;
+                console.warn('[AutoWallpaper] 未展示用完，強制重抓清單');
+                const refreshed = await collectAutoPool(wallets, { forceRefresh: true });
+                autoNfts = refreshed.nfts;
+                ownerByKey = refreshed.ownerByKey;
+                catalogComplete = refreshed.complete;
+                continue;
+              }
+              if (!allowRepeatFallback) {
+                allowRepeatFallback = true;
+                console.warn('[AutoWallpaper] 清單未抓齊，改從現有 pool 重抽以免停輪播');
+                continue;
+              }
+              console.warn('[AutoWallpaper] 未展示已用完且無法重抽');
               break;
             }
             throw e;
@@ -1102,7 +1110,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
       autoWallpaperBusy.current = false;
       console.warn('[AutoWallpaper] multiGet 失敗:', e?.message);
     });
-  }, [autoEnabled, loading, address, autoTick, interval, showDisplayHistory, wallets]);
+  }, [autoEnabled, loading, settingsLoaded, address, autoTick, interval, showDisplayHistory, wallets]);
 
   const loadPage = useCallback(
     async (pageKey: string | undefined, options?: { forceRefresh?: boolean }) => {

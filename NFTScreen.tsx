@@ -416,6 +416,7 @@ function pickRandomUnshown(
   console.log(
     '[AutoWallpaper] pick',
     `chain=${nft.chain}`,
+    `wallet=${(_ownerByKey.get(nftKey(nft)) ?? '?').slice(0, 6)}…${(_ownerByKey.get(nftKey(nft)) ?? '?').slice(-4)}`,
     `name=${nft.name}`,
     `unshown=${candidates.length}/${catalog.length}`
   );
@@ -426,12 +427,13 @@ function logPoolBreakdown(
   nfts: NFTItem[],
   ownerByKey: Map<string, string>,
   shownIds: string[],
-  skipped: Set<string>
+  skipped: Set<string>,
+  wallets: string[] = []
 ) {
   const shownSet = new Set(shownIds);
   const byOwner = new Map<string, NFTItem[]>();
+  for (const wallet of wallets) byOwner.set(wallet, []);
   for (const nft of nfts) {
-    if (skipped.has(nftKey(nft))) continue;
     const owner = ownerByKey.get(nftKey(nft)) ?? '?';
     const list = byOwner.get(owner) ?? [];
     list.push(nft);
@@ -445,9 +447,10 @@ function logPoolBreakdown(
   for (const [owner, list] of byOwner) {
     const withImg = list.filter(n => n.wallpaperUrl || n.imageUrl);
     const unshown = withImg.filter(n => !shownSet.has(nftKey(n)) && !shownSet.has(legacyNftKey(n)));
+    const eligible = unshown.filter(n => !skipped.has(nftKey(n)) && !skipped.has(legacyNftKey(n)));
     const chain = list[0]?.chain ?? detectChain(owner) ?? '?';
     console.log(
-      `[AutoWallpaper]   ${chain} ${owner.slice(0, 6)}…${owner.slice(-4)} total=${list.length} img=${withImg.length} unshown=${unshown.length}`
+      `[AutoWallpaper]   ${chain} ${owner.slice(0, 6)}…${owner.slice(-4)} total=${list.length} img=${withImg.length} shown=${withImg.length - unshown.length} unshown=${unshown.length} failedUnshown=${unshown.length - eligible.length} eligible=${eligible.length}`
     );
   }
 }
@@ -562,12 +565,13 @@ async function fetchPage(
 
 async function fetchTezosPage(
   address: string,
-  pageKey?: string
+  pageKey?: string,
+  pageSize = PAGE_SIZE
 ): Promise<{ items: NFTItem[]; nextPageKey?: string; totalCount?: number }> {
   const offset = pageKey ? parseInt(pageKey, 10) : 0;
   const url =
     `https://api.tzkt.io/v1/tokens/balances` +
-    `?account=${address}&limit=${PAGE_SIZE}&offset=${offset}` +
+    `?account=${address}&limit=${pageSize}&offset=${offset}` +
     `&token.standard=fa2&balance.gt=0`;
 
   console.log('[TzKT] GET', url);
@@ -586,11 +590,11 @@ async function fetchTezosPage(
     .map(parseTezosNFT)
     .filter((x): x is NFTItem => x !== null);
 
-  // offset-based pagination：若回傳滿 PAGE_SIZE 筆，就可能還有下一頁
-  const nextOffset = offset + PAGE_SIZE;
+  // Use raw response count, not the number remaining after image filtering.
+  const nextOffset = offset + data.length;
   return {
     items,
-    nextPageKey: data.length === PAGE_SIZE ? String(nextOffset) : undefined,
+    nextPageKey: data.length === pageSize ? String(nextOffset) : undefined,
     totalCount: undefined, // TzKT 需額外 count 請求，先省略
   };
 }
@@ -680,7 +684,8 @@ async function fetchAllNftsForAuto(
   const started = Date.now();
   let complete = true;
 
-  for (let page = 0; page < MAX_PAGES; page++) {
+  // Tezos follows pagination to the end, bounded by the existing time budget.
+  for (let page = 0; chain === 'tezos' || page < MAX_PAGES; page++) {
     if (Date.now() - started > AUTO_FETCH_BUDGET_MS) {
       complete = false;
       console.warn('[AutoWallpaper] fetch budget exceeded for', address, `pages=${page} items=${items.length}`);
@@ -688,11 +693,11 @@ async function fetchAllNftsForAuto(
     }
     try {
       const result: { items: NFTItem[]; nextPageKey?: string; totalCount?: number } =
-        chain === 'tezos' ? await fetchTezosPage(address, pageKey) : await fetchEthPage(address, pageKey);
+        chain === 'tezos' ? await fetchTezosPage(address, pageKey, 100) : await fetchEthPage(address, pageKey);
       items.push(...result.items);
       if (!result.nextPageKey) break;
       pageKey = result.nextPageKey;
-      if (page === MAX_PAGES - 1) complete = false;
+      if (chain !== 'tezos' && page === MAX_PAGES - 1) complete = false;
     } catch (e: any) {
       complete = false;
       console.warn('[AutoWallpaper] page failed, use partial', address, e?.message);
@@ -989,7 +994,7 @@ export default function NFTScreen({ wallets, onAddWallet, onRemoveWallet }: Prop
         let lastError: string | undefined;
         let didForceRefresh = false;
         let allowRepeatFallback = false;
-        logPoolBreakdown(autoNfts, ownerByKey, shownIds, skipped);
+        logPoolBreakdown(autoNfts, ownerByKey, shownIds, skipped, wallets);
 
         for (let attempt = 0; attempt < 12; attempt++) {
           const pool = autoNfts.filter(n => !skipped.has(nftKey(n)));

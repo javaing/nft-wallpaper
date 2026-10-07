@@ -224,6 +224,13 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         var xtzCount = allNfts.count { it.chain == "tezos" }
         repeat(12) {
             val remaining = allNfts.filter { !skipped.contains(it.key()) && !skipped.contains(it.legacyKey()) }
+            for (addr in addresses) {
+                val owned = allNfts.filter { it.ownerAddress == addr }
+                val images = owned.filter { it.imageUrl.isNotBlank() }
+                val unseen = images.filter { !shownIds.contains(it.key()) && !shownIds.contains(it.legacyKey()) }
+                val eligible = unseen.count { !skipped.contains(it.key()) && !skipped.contains(it.legacyKey()) }
+                Log.i("WallpaperWorker", "rotation wallet=${addr.take(6)}…${addr.takeLast(4)} total=${owned.size} images=${images.size} shown=${images.size - unseen.size} unshown=${unseen.size} failedUnshown=${unseen.size - eligible} eligible=$eligible catalogComplete=$catalogComplete")
+            }
             if (remaining.isEmpty()) return@repeat
             val chosen = try {
                 pickRandomUnshown(remaining, allNfts, shownIds, catalogComplete, allowRepeatFallback)
@@ -452,7 +459,7 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
         val chosen = pickPool[Random.nextInt(pickPool.size)]
         Log.i(
             "WallpaperWorker",
-            "pick chain=${chosen.chain} name=${chosen.name} unshown=${pickPool.size}/${full.size}"
+            "pick chain=${chosen.chain} wallet=${chosen.ownerAddress.take(6)}…${chosen.ownerAddress.takeLast(4)} key=${chosen.key()} name=${chosen.name} unshown=${pickPool.size}/${full.size}"
         )
         return chosen
     }
@@ -537,10 +544,10 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
             val pageSize = 100
             var offset = 0
             var page = 0
-            val maxPages = 25
             val before = out.size
 
-            while (page < maxPages && !budgetExceeded(deadline)) {
+            // Follow every page; the time budget still bounds a worker run.
+            while (!budgetExceeded(deadline)) {
                 val url =
                     "https://api.tzkt.io/v1/tokens/balances?account=$address&balance.gt=0&limit=$pageSize&offset=$offset&token.standard=fa2"
                 val json = httpGet(url) ?: break
@@ -575,14 +582,19 @@ class WallpaperWorker(context: Context, workerParams: WorkerParameters) :
                         )
                     )
                 }
+                page++
+                offset += arr.length()
                 if (arr.length() < pageSize) {
                     complete = true
                     break
                 }
-                offset += pageSize
-                page++
             }
-            Log.i("WallpaperWorker", "Tezos NFT metadata fetched: ${out.size - before} from $address complete=$complete")
+            val stopReason = when {
+                complete -> "end"
+                budgetExceeded(deadline) -> "time_budget"
+                else -> "request_failed"
+            }
+            Log.i("WallpaperWorker", "Tezos NFT metadata fetched: ${out.size - before} wallet=${address.take(6)}…${address.takeLast(4)} complete=$complete offset=$offset pages=$page stop=$stopReason")
         } catch (e: Exception) {
             Log.e("WallpaperWorker", "fetchTezosNfts error: ${e.message}")
         }
